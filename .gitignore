@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+bot.log
+data/
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+terminals/
+check_bot.py
+test_api.py
+test_api2.py
+*.log
+~$*
+.DS_Store
