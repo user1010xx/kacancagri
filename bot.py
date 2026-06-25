@@ -32,17 +32,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-config = ConfigStore()
+config = ConfigStore(DATA_DIR / "config.json")
 sent_store = SentStore(DATA_DIR / "sent_calls.json")
 
 HELP_TEXT = (
     "Merhaba! Bu bot Invekto kaçan çağrıları Telegram'a iletir.\n\n"
     "Komutlar:\n"
     "/ayar - Mevcut ayarları göster\n"
+    "/firmakodu <kod> - 8 haneli Invekto firma kodunu ayarla\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
 )
+
+
+def _require_company_code() -> str | None:
+    return config.company_code or None
 
 
 def _allowed_chat_filter() -> filters.BaseFilter:
@@ -57,12 +62,31 @@ async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(config.as_text())
 
 
+async def firmakodu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Kullanım: /firmakodu 12345678")
+        return
+
+    code = context.args[0].strip()
+    if not code.isdigit() or len(code) != 8:
+        await update.message.reply_text("Firma kodu 8 haneli sayı olmalıdır.")
+        return
+
+    config.company_code = code
+    await update.message.reply_text(f"✅ Firma kodu ayarlandı: {code}")
+
+
 async def kuyruklar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    company_code = _require_company_code()
+    if not company_code:
+        await update.message.reply_text("Önce /firmakodu komutu ile firma kodunu ayarlayın.")
+        return
+
     today = date.today()
     try:
         queues = await asyncio.to_thread(
             get_available_queues,
-            config.company_code,
+            company_code,
             today,
             today,
         )
@@ -89,6 +113,11 @@ async def kuyruklar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def kacancagri_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    company_code = _require_company_code()
+    if not company_code:
+        await update.message.reply_text("Önce /firmakodu komutu ile firma kodunu ayarlayın.")
+        return
+
     if not context.args:
         await update.message.reply_text("Kullanım: /kacancagri 15.06.2026, 25.06.2026")
         return
@@ -105,7 +134,7 @@ async def kacancagri_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         calls = await asyncio.to_thread(
             fetch_missed_calls,
-            config.company_code,
+            company_code,
             start_date,
             end_date,
             department_name=config.department_name or None,
@@ -125,7 +154,7 @@ async def kacancagri_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 queues = await asyncio.to_thread(
                     get_available_queues,
-                    config.company_code,
+                    company_code,
                     start_date,
                     end_date,
                 )
@@ -175,10 +204,14 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def _seed_today_sent_calls() -> int:
+    company_code = _require_company_code()
+    if not company_code:
+        return 0
+
     today = date.today()
     calls = await asyncio.to_thread(
         fetch_missed_calls,
-        config.company_code,
+        company_code,
         today,
         today,
         department_name=config.department_name or None,
@@ -190,12 +223,16 @@ async def _seed_today_sent_calls() -> int:
 
 
 async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
+    company_code = _require_company_code()
+    if not company_code:
+        return
+
     today = date.today()
 
     try:
         calls = await asyncio.to_thread(
             fetch_missed_calls,
-            config.company_code,
+            company_code,
             today,
             today,
             department_name=config.department_name or None,
@@ -246,6 +283,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start_command, filters=allowed))
     application.add_handler(CommandHandler("help", start_command, filters=allowed))
     application.add_handler(CommandHandler("ayar", ayar_command, filters=allowed))
+    application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))
     application.add_error_handler(error_handler)
