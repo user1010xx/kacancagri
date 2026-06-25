@@ -10,6 +10,7 @@ __pycache__/
 venv/
 terminals/
 check_bot.py
+check_webhook.py
 test_api.py
 test_api2.py
 *.log

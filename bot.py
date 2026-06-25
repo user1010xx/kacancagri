@@ -6,7 +6,13 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    TypeHandler,
+    filters,
+)
 
 from config_store import ConfigStore
 from excel_export import export_missed_calls_excel, sort_calls
@@ -40,7 +46,8 @@ HELP_TEXT = (
     "Komutlar:\n"
     "/ayar - Mevcut ayarları göster\n"
     "/firmakodu <kod> - 8 haneli Invekto firma kodunu ayarla\n"
-    "/chatid - Bu grubun ID'sini göster (Railway ayarı için)\n"
+    "/chatid - Bu grubun ID'sini göster\n"
+    "/ping - Bot bağlantı testi\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
@@ -51,12 +58,47 @@ def _require_company_code() -> str | None:
     return config.company_code or None
 
 
-def _allowed_chat_filter() -> filters.BaseFilter:
-    return filters.Chat(chat_id=config.target_chat_id) & filters.ChatType.GROUPS
+def _allowed_chat_filter() -> filters.MessageFilter:
+    class AllowedGroupFilter(filters.MessageFilter):
+        def filter(self, message) -> bool:
+            if message.chat.type not in ("group", "supergroup"):
+                return False
+            if message.chat_id != config.target_chat_id:
+                logger.warning(
+                    "Yetkisiz grup komutu reddedildi. gelen=%s beklenen=%s",
+                    message.chat_id,
+                    config.target_chat_id,
+                )
+                return False
+            return True
+
+    return AllowedGroupFilter()
+
+
+async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    if not chat:
+        return
+    text = update.effective_message.text if update.effective_message else "-"
+    logger.info(
+        "Gelen update: chat_id=%s chat_type=%s text=%s",
+        chat.id,
+        chat.type,
+        text,
+    )
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(HELP_TEXT)
+
+
+async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    allowed = chat.id == config.target_chat_id
+    await update.message.reply_text(
+        f"pong\nchat_id={chat.id}\nbeklenen={config.target_chat_id}\n"
+        f"yetkili_grup={'evet' if allowed else 'hayir'}"
+    )
 
 
 async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -65,12 +107,11 @@ async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chat = update.effective_chat
-    allowed = "✅ Bu grup yetkili" if chat.id == config.target_chat_id else "❌ Bu grup yetkili değil"
+    allowed = chat.id == config.target_chat_id
     await update.message.reply_text(
-        f"Sohbet ID: `{chat.id}`\n"
-        f"Railway TELEGRAM_GROUP_CHAT_ID: `{config.target_chat_id}`\n"
-        f"Durum: {allowed}",
-        parse_mode="Markdown",
+        f"Sohbet ID: {chat.id}\n"
+        f"Railway TELEGRAM_GROUP_CHAT_ID: {config.target_chat_id}\n"
+        f"Durum: {'Bu grup yetkili' if allowed else 'Bu grup yetkili degil'}"
     )
 
 
@@ -270,6 +311,12 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(application: Application) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    me = await application.bot.get_me()
+    logger.info("Bot aktif: @%s", me.username)
+    logger.info("Yetkili grup ID: %s", config.target_chat_id)
+
     try:
         seeded = await _seed_today_sent_calls()
         logger.info("Başlangıçta %s mevcut kaçan çağrı işaretlendi.", seeded)
@@ -284,6 +331,7 @@ def main() -> None:
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     allowed = _allowed_chat_filter()
+    group_only = filters.ChatType.GROUPS
 
     application = (
         Application.builder()
@@ -292,12 +340,12 @@ def main() -> None:
         .build()
     )
 
+    application.add_handler(TypeHandler(Update, log_update), group=-1)
+    application.add_handler(CommandHandler("ping", ping_command, filters=group_only))
+    application.add_handler(CommandHandler("chatid", chatid_command, filters=group_only))
     application.add_handler(CommandHandler("start", start_command, filters=allowed))
     application.add_handler(CommandHandler("help", start_command, filters=allowed))
     application.add_handler(CommandHandler("ayar", ayar_command, filters=allowed))
-    application.add_handler(
-        CommandHandler("chatid", chatid_command, filters=filters.ChatType.GROUPS)
-    )
     application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))
@@ -310,8 +358,11 @@ def main() -> None:
         name="missed-call-poller",
     )
 
-    logger.info("Bot başlatılıyor. Grup ID: %s", config.target_chat_id)
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    logger.info("Polling başlıyor...")
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
