@@ -40,6 +40,7 @@ HELP_TEXT = (
     "Komutlar:\n"
     "/ayar - Mevcut ayarları göster\n"
     "/firmakodu <kod> - 8 haneli Invekto firma kodunu ayarla\n"
+    "/chatid - Bu grubun ID'sini göster (Railway ayarı için)\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
@@ -60,6 +61,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(config.as_text())
+
+
+async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    chat = update.effective_chat
+    allowed = "✅ Bu grup yetkili" if chat.id == config.target_chat_id else "❌ Bu grup yetkili değil"
+    await update.message.reply_text(
+        f"Sohbet ID: `{chat.id}`\n"
+        f"Railway TELEGRAM_GROUP_CHAT_ID: `{config.target_chat_id}`\n"
+        f"Durum: {allowed}",
+        parse_mode="Markdown",
+    )
 
 
 async def firmakodu_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -283,6 +295,9 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start_command, filters=allowed))
     application.add_handler(CommandHandler("help", start_command, filters=allowed))
     application.add_handler(CommandHandler("ayar", ayar_command, filters=allowed))
+    application.add_handler(
+        CommandHandler("chatid", chatid_command, filters=filters.ChatType.GROUPS)
+    )
     application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))

@@ -44,7 +44,7 @@ class ConfigStore:
 
     @staticmethod
     def _read_chat_id() -> int:
-        raw = os.getenv("TELEGRAM_GROUP_CHAT_ID", "").strip()
+        raw = os.getenv("TELEGRAM_GROUP_CHAT_ID", "").strip().strip("\"'")
         if not raw:
             return 0
         return int(raw)
