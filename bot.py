@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import os
-from datetime import date
+from datetime import date, datetime as dtm
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,15 +28,35 @@ from invekto_client import (
 from sent_store import SentStore
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
+# DATA_DIR: Railway volume için /app/data kullanılabilir.
+# Varsayılan: ./data (yerel geliştirme için)
+DATA_DIR = Path(os.getenv("DATA_DIR", str(BASE_DIR / "data"))).resolve()
 
 load_dotenv(BASE_DIR / ".env")
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-    handlers=[logging.StreamHandler()],
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "bot.log"
+
+# Console + rotating file (5MB x 5 backups)
+log_formatter = logging.Formatter(
+    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.INFO)
+
+# Console
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+root_logger.addHandler(console_handler)
+
+# Rotating file
+file_handler = RotatingFileHandler(
+    LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"
+)
+file_handler.setFormatter(log_formatter)
+root_logger.addHandler(file_handler)
+
 logger = logging.getLogger(__name__)
 
 config = ConfigStore(DATA_DIR / "config.json")
@@ -48,6 +69,7 @@ HELP_TEXT = (
     "/firmakodu <kod> - 8 haneli Invekto firma kodunu ayarla\n"
     "/chatid - Bu grubun ID'sini göster\n"
     "/ping - Bot bağlantı testi\n"
+    "/stats - Bot istatistikleri (dedup kaydı, vs.)\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
@@ -103,6 +125,26 @@ async def ping_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(config.as_text())
+
+
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    company_code = _require_company_code()
+    total_tracked = sent_store.count()
+
+    # Simple runtime stats from bot_data if available
+    last_poll_count = context.bot_data.get("last_poll_count", "-") if context.bot_data else "-"
+    last_poll_time = context.bot_data.get("last_poll_time", "-") if context.bot_data else "-"
+
+    text = (
+        "📊 Bot İstatistikleri\n\n"
+        f"🏢 Firma Kodu: {company_code or 'Ayarlanmadı'}\n"
+        f"🏷️ Departman: {config.department_name or 'Tümü'}\n"
+        f"📦 Takip edilen (dedup) çağrı sayısı: {total_tracked}\n"
+        f"⏱️ Polling aralığı: {config.polling_interval_seconds} sn\n"
+        f"🕒 Son poll sonucu (bu oturum): {last_poll_count}\n"
+        f"🕒 Son poll zamanı: {last_poll_time}\n"
+    )
+    await update.message.reply_text(text)
 
 
 async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -281,6 +323,7 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     today = date.today()
+    sent_now = 0
 
     try:
         calls = await asyncio.to_thread(
@@ -305,8 +348,14 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
                 text=format_call_message(call),
             )
             sent_store.add(key)
+            sent_now += 1
         except Exception as exc:
             logger.warning("Telegram bildirimi gönderilemedi: %s", exc)
+
+    # Store lightweight stats for /stats
+    if context.bot_data is not None:
+        context.bot_data["last_poll_count"] = sent_now
+        context.bot_data["last_poll_time"] = dtm.now().strftime("%d.%m.%Y %H:%M:%S")
 
 
 async def post_init(application: Application) -> None:
@@ -346,6 +395,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start_command, filters=allowed))
     application.add_handler(CommandHandler("help", start_command, filters=allowed))
     application.add_handler(CommandHandler("ayar", ayar_command, filters=allowed))
+    application.add_handler(CommandHandler("stats", stats_command, filters=allowed))
     application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))

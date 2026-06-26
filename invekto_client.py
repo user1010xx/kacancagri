@@ -53,8 +53,17 @@ def _request_report(
     if report_type in (REPORT_TYPE_MISS_CALL, REPORT_TYPE_QUEUE_DETAIL):
         payload["unCompleted"] = uncompleted_only
 
-    response = requests.post(API_URL, json=payload, timeout=timeout)
-    response.raise_for_status()
+    # Basit retry (3 deneme)
+    for attempt in range(3):
+        try:
+            response = requests.post(API_URL, json=payload, timeout=timeout)
+            response.raise_for_status()
+            break
+        except Exception:
+            if attempt == 2:
+                raise
+            import time as _t
+            _t.sleep(1.5 * (attempt + 1))
 
     body = response.json()
     if not body.get("Status"):
@@ -117,6 +126,34 @@ def _call_datetime(record: dict[str, Any]) -> tuple[str, str]:
         or ""
     )
     return _normalize_date(raw_date), str(call_time).strip()
+
+
+def parse_call_datetime(call: dict[str, Any]) -> datetime | None:
+    """Parse call record to a real datetime object for reliable sorting and comparison."""
+    try:
+        date_str, time_str = _call_datetime(call)
+        if not date_str:
+            return None
+        time_str = time_str or "00:00:00"
+        for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y"):
+            try:
+                return datetime.strptime(f"{date_str} {time_str}".strip(), fmt)
+            except ValueError:
+                continue
+        # Last attempt with raw
+        raw_date = str(call.get("ChekInDate") or call.get("CreateDate") or call.get("Date") or "").strip()
+        raw_time = str(call.get("ChekInTime") or call.get("CreateTime") or call.get("Time") or "").strip()
+        if raw_date and "T" in raw_date:
+            raw_date = raw_date.split("T", 1)[0]
+        if raw_date and raw_time:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    return datetime.strptime(f"{raw_date} {raw_time}", fmt)
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+    return None
 
 
 def resolve_queue_number(
