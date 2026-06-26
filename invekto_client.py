@@ -1,11 +1,13 @@
+import re
 import requests
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 API_URL = "https://app.invekto.com/invekto/pbxreport"
 REPORT_TYPE_MISS_CALL = 2
 REPORT_TYPE_QUEUE = 3
 REPORT_TYPE_QUEUE_DETAIL = 4
+REPORT_TYPE_CONVERSATION = 5
 
 
 class InvektoError(Exception):
@@ -348,3 +350,88 @@ def parse_command_dates(text: str) -> tuple[date, date]:
         raise ValueError("Başlangıç tarihi bitiş tarihinden büyük olamaz.")
 
     return start, end
+
+
+# ====================== YENİ: GÖRÜŞME + PERSONEL YÖNLENDİRME ======================
+
+def _normalize_phone(phone: str) -> str:
+    """Normalize telefon numarasını son 10 haneli core haline getirir.
+    Örnek: 905551112233, 05551112233, 5551112233 → 5551112233
+    """
+    if not phone:
+        return ""
+    digits = re.sub(r"\D", "", str(phone))
+    if len(digits) > 10:
+        if digits.startswith("90"):
+            digits = digits[2:]
+        elif digits.startswith("0"):
+            digits = digits[1:]
+    return digits[-10:] if len(digits) >= 10 else digits
+
+
+def get_last_dahili_for_phone(
+    company_code: str,
+    phone: str,
+    days: int = 15,
+    timeout: int = 30,
+) -> str | None:
+    """Son 15 günde bu numara ile ilgili herhangi bir arama kaydı varsa,
+    en son kayıttaki dahili adını (ExtensionName öncelikli) döndürür.
+    Kayıt yoksa None döner.
+    """
+    phone_key = _normalize_phone(phone)
+    if not phone_key:
+        return None
+
+    end_date = date.today()
+    start_date = end_date - timedelta(days=days)
+
+    try:
+        records = _request_report(
+            company_code,
+            start_date,
+            end_date,
+            REPORT_TYPE_CONVERSATION,
+            timeout=timeout,
+        )
+    except Exception:
+        return None
+
+    matches = []
+    for rec in records:
+        rec_phone = _normalize_phone(rec.get("Phone") or rec.get("phone") or "")
+        if rec_phone != phone_key:
+            continue
+
+        # Dahili adı öncelik: ExtensionName > Extension
+        dahili = (
+            rec.get("ExtensionName")
+            or rec.get("Extension")
+            or rec.get("extensionName")
+            or rec.get("extension")
+            or ""
+        ).strip()
+
+        if not dahili:
+            continue
+
+        # Sıralama için tarih+saat
+        d = rec.get("Date") or rec.get("ChekInDate") or rec.get("CreateDate") or ""
+        t = rec.get("Time") or rec.get("ChekInTime") or rec.get("CreateTime") or ""
+        matches.append((d, t, dahili))
+
+    if not matches:
+        return None
+
+    def parse_key(item):
+        d, t, _ = item
+        text = f"{d} {t}".strip()
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
+            try:
+                return datetime.strptime(text[:19], fmt)
+            except ValueError:
+                continue
+        return datetime.min
+
+    matches.sort(key=parse_key, reverse=True)
+    return matches[0][2]

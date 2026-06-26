@@ -13,6 +13,7 @@ check_bot.py
 check_webhook.py
 test_api.py
 test_api2.py
+test_1830_1900.py
 *.log
 ~$*
 .DS_Store

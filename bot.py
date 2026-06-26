@@ -11,18 +11,21 @@ from telegram.ext import (
     Application,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
     TypeHandler,
     filters,
 )
 
 from config_store import ConfigStore
 from excel_export import export_missed_calls_excel, sort_calls
+from personnel_store import PersonnelStore
 from invekto_client import (
     InvektoError,
     call_key,
     fetch_missed_calls,
     format_call_message,
     get_available_queues,
+    get_last_dahili_for_phone,
     parse_command_dates,
 )
 from sent_store import SentStore
@@ -61,6 +64,7 @@ logger = logging.getLogger(__name__)
 
 config = ConfigStore(DATA_DIR / "config.json")
 sent_store = SentStore(DATA_DIR / "sent_calls.json")
+personnel_store = PersonnelStore(DATA_DIR / "personnels.json")
 
 HELP_TEXT = (
     "Merhaba! Bu bot Invekto kaçan çağrıları Telegram'a iletir.\n\n"
@@ -72,12 +76,22 @@ HELP_TEXT = (
     "/stats - Bot istatistikleri (dedup kaydı, vs.)\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
+    "/personelekle <dahili> <ad> <@kullanici> - Personel ekle/güncelle\n"
+    "/personelsil <dahili> - Personeli sil\n"
+    "/personeller - Kayıtlı personelleri listele\n"
+    "Excel ile personel yüklemek için .xlsx dosyası gönderin (3 sütun: dahili, ad, @username)\n"
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
 )
 
 
 def _require_company_code() -> str | None:
     return config.company_code or None
+
+
+def _get_call_datetime(call: dict) -> tuple[str, str]:
+    """Invekto call kaydından tarih ve saat döndürür (iç kullanım)."""
+    from invekto_client import _call_datetime
+    return _call_datetime(call)
 
 
 def _allowed_chat_filter() -> filters.MessageFilter:
@@ -145,6 +159,79 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"🕒 Son poll zamanı: {last_poll_time}\n"
     )
     await update.message.reply_text(text)
+
+
+async def personelekle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Kullanım: /personelekle 105 \"Ahmet Yılmaz\" @ahmet_yilmaz\n"
+            "veya /personelekle 105 Ahmet @ahmet_yilmaz"
+        )
+        return
+
+    dahili = context.args[0].strip()
+    # Son argüman username
+    username = context.args[-1].strip()
+    # Ortadaki ad (birden fazla kelime olabilir)
+    ad = " ".join(context.args[1:-1]).strip().strip('"').strip("'")
+
+    if not dahili or not ad:
+        await update.message.reply_text("Dahili ve personel adı boş olamaz.")
+        return
+
+    if personnel_store.add_or_update(dahili, ad, username):
+        await update.message.reply_text(f"✅ Personel eklendi/güncellendi: {ad} (Dahili: {dahili})")
+    else:
+        await update.message.reply_text("Personel eklenemedi.")
+
+
+async def personelsil_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Kullanım: /personelsil 105")
+        return
+
+    dahili = context.args[0].strip()
+    if personnel_store.remove(dahili):
+        await update.message.reply_text(f"✅ Personel silindi: {dahili}")
+    else:
+        await update.message.reply_text("Böyle bir personel bulunamadı.")
+
+
+async def personeller_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    items = personnel_store.get_all()
+    if not items:
+        await update.message.reply_text("Kayıtlı personel yok. Excel veya /personelekle ile ekleyin.")
+        return
+
+    lines = ["📋 Kayıtlı Personeller\n"]
+    for p in items:
+        lines.append(f"• {p['dahili_ad']} - {p['personel_adi']} - @{p['telegram_username']}")
+    await update.message.reply_text("\n".join(lines))
+
+
+async def personel_excel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Sadece yetkili grupta gönderilen .xlsx dosyalarını personel olarak işler."""
+    doc = update.message.document
+    if not doc or not doc.file_name.lower().endswith(".xlsx"):
+        return
+
+    file = await context.bot.get_file(doc.file_id)
+    temp_path = DATA_DIR / "temp_personel_upload.xlsx"
+    await file.download_to_drive(temp_path)
+
+    try:
+        count = personnel_store.load_from_excel(temp_path)
+        await update.message.reply_text(
+            f"✅ Personel Excel işlendi.\n"
+            f"{count} personel güncellendi veya eklendi.\n"
+            f"Toplam personel: {personnel_store.count()}"
+        )
+    except Exception as e:
+        logger.exception("Personel Excel işlenemedi")
+        await update.message.reply_text(f"❌ Excel işlenirken hata oluştu: {e}")
+    finally:
+        if temp_path.exists():
+            temp_path.unlink(missing_ok=True)
 
 
 async def chatid_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -342,15 +429,82 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
         key = call_key(call)
         if sent_store.has(key):
             continue
-        try:
-            await context.bot.send_message(
-                chat_id=config.target_chat_id,
-                text=format_call_message(call),
+
+        phone = call.get("Phone") or ""
+        call_date, call_time = _get_call_datetime(call)
+        call_time_str = f"{call_date} {call_time}".strip() or "Bilinmiyor"
+
+        # Görüşme geçmişinden sorumlu dahiliyi bul (son 15 gün)
+        dahili = get_last_dahili_for_phone(company_code, phone, days=15)
+
+        if not dahili:
+            # Kayıt yok → es geç (personel özel mesajı yok)
+            # Gruba temel bilgi verelim
+            group_text = (
+                "🔴 Kaçan Çağrı\n\n"
+                f"📞 Telefon: {phone}\n"
+                f"🕐 Arama Saati: {call_time_str}\n"
+                "ℹ️ Son 15 günde eşleşen personel bulunamadı."
             )
+            try:
+                await context.bot.send_message(chat_id=config.target_chat_id, text=group_text)
+                sent_store.add(key)
+                sent_now += 1
+            except Exception as exc:
+                logger.warning("Grup bildirimi gönderilemedi: %s", exc)
+            continue
+
+        personnel = personnel_store.get(dahili)
+        if not personnel:
+            group_text = (
+                "🔴 Kaçan Çağrı\n\n"
+                f"📞 Telefon: {phone}\n"
+                f"🕐 Arama Saati: {call_time_str}\n"
+                f"⚠️ Dahili {dahili} için personel kaydı bulunamadı."
+            )
+            try:
+                await context.bot.send_message(chat_id=config.target_chat_id, text=group_text)
+                sent_store.add(key)
+            except Exception as exc:
+                logger.warning("Grup bildirimi gönderilemedi: %s", exc)
+            continue
+
+        personel_adi = personnel.get("personel_adi", dahili)
+        tg_username = personnel.get("telegram_username", "")
+
+        # Özel mesaj (personel)
+        private_text = (
+            "Kaçan Çağrı\n\n"
+            f"{personel_adi}\n"
+            f"{phone}\n"
+            f"{call_time_str}\n\n"
+            "Üye adayımızı arar mısın ?"
+        )
+
+        private_ok = False
+        try:
+            chat_target = tg_username if tg_username.startswith("@") else f"@{tg_username}"
+            await context.bot.send_message(chat_id=chat_target, text=private_text)
+            private_ok = True
+        except Exception as exc:
+            logger.warning("Personele özel mesaj gönderilemedi (@%s): %s", tg_username, exc)
+
+        # Grup mesajı (her zaman)
+        info = f"@{tg_username} e iletildi." if private_ok else f"@{tg_username} e iletilemedi!"
+        group_text = (
+            "Kaçan çağrı\n"
+            f"- Personel : {personel_adi}\n"
+            f"- Numara : {phone}\n"
+            f"- Arama saati : {call_time_str}\n"
+            f"- İnfo : {info}"
+        )
+
+        try:
+            await context.bot.send_message(chat_id=config.target_chat_id, text=group_text)
             sent_store.add(key)
             sent_now += 1
         except Exception as exc:
-            logger.warning("Telegram bildirimi gönderilemedi: %s", exc)
+            logger.warning("Grup bildirimi gönderilemedi: %s", exc)
 
     # Store lightweight stats for /stats
     if context.bot_data is not None:
@@ -399,6 +553,14 @@ def main() -> None:
     application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))
+
+    # Personel yönetimi
+    application.add_handler(CommandHandler("personelekle", personelekle_command, filters=allowed))
+    application.add_handler(CommandHandler("personelsil", personelsil_command, filters=allowed))
+    application.add_handler(CommandHandler("personeller", personeller_command, filters=allowed))
+    # Excel ile personel yükleme (sadece yetkili grupta .xlsx)
+    application.add_handler(MessageHandler(filters.Document.ALL & allowed, personel_excel_handler))
+
     application.add_error_handler(error_handler)
 
     application.job_queue.run_repeating(
