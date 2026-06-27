@@ -54,7 +54,7 @@ def build_missed_call_context(
             retry_private_only=False,
         )
 
-    personnel = personnel_store.get(dahili)
+    personnel = personnel_store.find_for_extension(dahili)
     if not personnel:
         return MissedCallContext(
             key=key,

@@ -397,6 +397,8 @@ def _extract_dahili_from_record(rec: dict[str, Any]) -> str:
     return str(
         rec.get("ExtensionName")
         or rec.get("Extension")
+        or rec.get("CompletedExtensionName")
+        or rec.get("CompletedExtension")
         or rec.get("extensionName")
         or rec.get("extension")
         or ""

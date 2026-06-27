@@ -88,8 +88,52 @@ class PersonnelStore:
                 return True
         return False
 
+    @staticmethod
+    def _extension_token(value: str) -> str:
+        """Invekto/UI farklarını yumuşatır: 'selen-K' ve 'Selen K' -> 'selen'."""
+        text = str(value).strip().casefold()
+        if not text:
+            return ""
+        return text.split("-")[0].split()[0]
+
     def get(self, dahili_ad: str) -> dict[str, str] | None:
         return self._data.get(str(dahili_ad).strip())
+
+    def find_for_extension(self, extension: str) -> dict[str, str] | None:
+        """Invekto ExtensionName ile personel kaydını eşleştirir.
+
+        Sıra: tam dahili anahtarı -> büyük/küçük harf -> personel adı -> @username
+        """
+        ext = str(extension).strip()
+        if not ext:
+            return None
+
+        direct = self.get(ext)
+        if direct:
+            return direct
+
+        ext_cf = ext.casefold()
+        ext_token = self._extension_token(ext)
+
+        for dahili, info in self._data.items():
+            if str(dahili).strip().casefold() == ext_cf:
+                return info
+
+        for info in self._data.values():
+            ad = str(info.get("personel_adi", "")).strip()
+            if not ad:
+                continue
+            if ad.casefold() == ext_cf or self._extension_token(ad) == ext_token:
+                return info
+
+            username = str(info.get("telegram_username", "")).strip().lstrip("@")
+            if username and (
+                username.casefold() == ext_cf
+                or self._extension_token(username) == ext_token
+            ):
+                return info
+
+        return None
 
     def get_all(self) -> list[dict[str, str]]:
         result = []

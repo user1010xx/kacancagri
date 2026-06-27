@@ -15,6 +15,25 @@ def test_add_update_and_link_chat_id(tmp_path: Path):
     assert store.get_all()[0]["dm_ready"] is True
 
 
+def test_find_for_extension_by_name_token(tmp_path: Path):
+    store = PersonnelStore(tmp_path / "personnels.json")
+    store.add_or_update("105", "selen-K", "selen_user")
+
+    found = store.find_for_extension("selen")
+    assert found is not None
+    assert found["personel_adi"] == "selen-K"
+    assert found["telegram_username"] == "selen_user"
+
+
+def test_find_for_extension_case_insensitive_key(tmp_path: Path):
+    store = PersonnelStore(tmp_path / "personnels.json")
+    store.add_or_update("Selen", "Selen Yilmaz", "selen_user")
+
+    found = store.find_for_extension("selen")
+    assert found is not None
+    assert found["personel_adi"] == "Selen Yilmaz"
+
+
 def test_excel_bulk_save_once(tmp_path: Path):
     from openpyxl import Workbook
 

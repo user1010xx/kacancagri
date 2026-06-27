@@ -20,6 +20,30 @@ class _FakeSentStore:
         return key in self.group_notified
 
 
+def test_build_context_matches_personnel_by_name(tmp_path):
+    sent = _FakeSentStore()
+    personnel = PersonnelStore(tmp_path / "p.json")
+    personnel.add_or_update("105", "selen-K", "selen_test")
+
+    call = {
+        "ID": "57519",
+        "Phone": "905425889653",
+        "ChekInDate": "2026-06-27",
+        "ChekInTime": "09:58:32",
+        "Queue": "Gelen Arama",
+        "Status": "2",
+    }
+    ctx = build_missed_call_context(
+        call,
+        dahili_cache={"5425889653": "selen"},
+        personnel_store=personnel,
+        sent_store=sent,
+    )
+    assert ctx is not None
+    assert ctx.kind == NotifyKind.PERSONNEL
+    assert ctx.personnel is not None
+
+
 def test_build_context_no_dahili(tmp_path):
     sent = _FakeSentStore()
     personnel = PersonnelStore(tmp_path / "p.json")
