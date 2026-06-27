@@ -7,12 +7,9 @@ from invekto_client import (
     format_call_message,
     filter_by_department,
     parse_call_datetime,
-    _fetch_from_conversation_report,
-    _is_conversation_missed_call,
     _is_missed_call,
     _is_uncompleted,
     _match_department,
-    _normalize_conversation_record,
     _normalize_phone,
 )
 
@@ -105,98 +102,3 @@ def test_is_missed_and_uncompleted():
     assert _is_uncompleted({"IsCompleted": False})
     assert _is_uncompleted({"IsCompleted": "0"})
     assert not _is_uncompleted({"IsCompleted": True})
-
-
-def test_conversation_missed_call_detection():
-    assert _is_conversation_missed_call({"Direction": "MISSCALL"})
-    assert _is_conversation_missed_call({"Direction": "misscall"})
-    assert not _is_conversation_missed_call({"Direction": "OUT"})
-
-
-def test_normalize_conversation_record():
-    raw = {
-        "Direction": "MISSCALL",
-        "Phone": "905301718596",
-        "CreateDate": "2026-06-27T00:00:00",
-        "CreateTime": "11:02:02",
-        "Queue": "Gelen Arama",
-        "CallID": "abc123",
-        "IsCompleted": False,
-    }
-    normalized = _normalize_conversation_record(raw)
-    assert normalized["ID"] == "abc123"
-    assert normalized["Status"] == "2"
-    assert normalized["ChekInTime"] == "11:02:02"
-
-    key = call_key(normalized)
-    assert "905301718596" in key
-    assert "Gelen Arama" in key
-    assert "27.06.2026" in key
-
-
-def test_fetch_from_conversation_report_filters(monkeypatch):
-    from datetime import date
-
-    sample_records = [
-        {
-            "Direction": "MISSCALL",
-            "Phone": "905301718596",
-            "CreateDate": "2026-06-27T00:00:00",
-            "CreateTime": "11:02:02",
-            "Queue": "Gelen Arama",
-            "CallID": "c1",
-            "IsCompleted": False,
-        },
-        {
-            "Direction": "MISSCALL",
-            "Phone": "905551112233",
-            "CreateDate": "2026-06-27T00:00:00",
-            "CreateTime": "08:00:00",
-            "Queue": "MESAI DIŞI",
-            "CallID": "c2",
-            "IsCompleted": False,
-        },
-        {
-            "Direction": "OUT",
-            "Phone": "905551112233",
-            "CreateDate": "2026-06-27T00:00:00",
-            "CreateTime": "09:00:00",
-            "Queue": "Gelen Arama",
-            "CallID": "c3",
-            "IsCompleted": False,
-        },
-        {
-            "Direction": "MISSCALL",
-            "Phone": "905551112233",
-            "CreateDate": "2026-06-27T00:00:00",
-            "CreateTime": "10:00:00",
-            "Queue": "Gelen Arama",
-            "CallID": "c4",
-            "IsCompleted": True,
-        },
-    ]
-
-    def fake_request(*_args, **_kwargs):
-        return sample_records
-
-    monkeypatch.setattr("invekto_client._request_report", fake_request)
-
-    today = date(2026, 6, 27)
-    all_calls = _fetch_from_conversation_report(
-        "12345678",
-        today,
-        today,
-        department_name="Gelen Arama",
-        uncompleted_only=False,
-    )
-    assert len(all_calls) == 2
-
-    open_calls = _fetch_from_conversation_report(
-        "12345678",
-        today,
-        today,
-        department_name="Gelen Arama",
-        uncompleted_only=True,
-    )
-    assert len(open_calls) == 1
-    assert open_calls[0]["Phone"] == "905301718596"
