@@ -9,6 +9,8 @@ from invekto_client import (
     parse_call_datetime,
     _is_missed_call,
     _is_uncompleted,
+    _match_department,
+    _normalize_phone,
 )
 
 
@@ -47,15 +49,35 @@ def test_call_key_and_format():
     assert "905551112233" in msg
 
 
-def test_filter_by_department():
+def test_filter_by_department_exact():
     calls = [
         {"Queue": "Gelen Arama", "Phone": "1"},
         {"QueueName": "Satış", "Phone": "2"},
         {"Queue": "gelen arama ekibi", "Phone": "3"},
     ]
     filtered = filter_by_department(calls, "Gelen Arama")
-    assert len(filtered) == 2
+    assert len(filtered) == 1
     assert filtered[0]["Phone"] == "1"
+
+
+def test_filter_by_department_loose():
+    calls = [
+        {"Queue": "Gelen Arama", "Phone": "1"},
+        {"Queue": "gelen arama ekibi", "Phone": "3"},
+    ]
+    filtered = filter_by_department(calls, "Gelen Arama", loose=True)
+    assert len(filtered) == 2
+
+
+def test_match_department_modes():
+    assert _match_department("Gelen Arama", "Gelen Arama")
+    assert not _match_department("gelen arama ekibi", "Gelen Arama")
+    assert _match_department("gelen arama ekibi", "Gelen Arama", loose=True)
+
+
+def test_normalize_phone():
+    assert _normalize_phone("905551112233") == "5551112233"
+    assert _normalize_phone("05551112233") == "5551112233"
 
 
 def test_parse_call_datetime_variants():

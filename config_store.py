@@ -17,13 +17,17 @@ class ConfigStore:
 
     def _load_env(self) -> None:
         self.department_name = os.getenv("INVEKTO_DEPARTMENT_NAME", "").strip()
-        self.target_chat_id = self._read_chat_id()
+        self.target_chat_id, self._chat_id_error = self._read_chat_id()
         self.polling_interval_seconds = max(
             int(os.getenv("POLLING_INTERVAL_SECONDS", "30")),
             15,
         )
         self.notify_uncompleted_only = (
             os.getenv("NOTIFY_UNCOMPLETED_ONLY", "true").strip().lower()
+            in {"1", "true", "yes", "on"}
+        )
+        self.department_loose_match = (
+            os.getenv("INVEKTO_DEPARTMENT_LOOSE_MATCH", "false").strip().lower()
             in {"1", "true", "yes", "on"}
         )
 
@@ -43,11 +47,14 @@ class ConfigStore:
             json.dump(self._runtime, file, ensure_ascii=False, indent=2)
 
     @staticmethod
-    def _read_chat_id() -> int:
+    def _read_chat_id() -> tuple[int, str | None]:
         raw = os.getenv("TELEGRAM_GROUP_CHAT_ID", "").strip().strip("\"'")
         if not raw:
-            return 0
-        return int(raw)
+            return 0, None
+        try:
+            return int(raw), None
+        except ValueError:
+            return 0, "geçersiz sayı"
 
     @property
     def company_code(self) -> str:
@@ -62,17 +69,25 @@ class ConfigStore:
         errors: list[str] = []
         if not os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
             errors.append("TELEGRAM_BOT_TOKEN")
-        if not self.target_chat_id:
+        if self._chat_id_error:
+            errors.append("TELEGRAM_GROUP_CHAT_ID (geçersiz)")
+        elif not self.target_chat_id:
             errors.append("TELEGRAM_GROUP_CHAT_ID")
         return errors
 
     def as_text(self) -> str:
         department = self.department_name or "Tümü"
         company = self.company_code or "Ayarlanmadı (/firmakodu)"
+        notify_mode = (
+            "Sadece tamamlanmamış" if self.notify_uncompleted_only else "Tümü"
+        )
+        dept_match = "Gevşek (substring)" if self.department_loose_match else "Tam eşleşme"
         return (
             "⚙️ Bot Ayarları\n\n"
             f"🏢 Firma Kodu: {company}\n"
             f"🏷️ Kuyruk/Departman: {department}\n"
+            f"🔎 Departman eşleştirme: {dept_match}\n"
+            f"📨 Bildirim filtresi: {notify_mode}\n"
             f"💬 Bildirim Grubu: {self.target_chat_id or 'Tanımlı değil'}\n"
             f"⏱️ Kontrol Aralığı: {self.polling_interval_seconds} sn"
         )

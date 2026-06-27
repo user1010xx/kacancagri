@@ -1,4 +1,6 @@
 import json
+import os
+import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -8,10 +10,11 @@ class SentStore:
         self.path = path
         self.max_age_days = max_age_days
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._keys = self._load()
+        self._lock = threading.Lock()
+        self._completed, self._group_notified = self._load()
+        self._dirty = False
 
     def _extract_date_from_key(self, key: str) -> date | None:
-        # key format: "ID|Phone|dd.mm.yyyy|HH:MM:SS|dept"
         try:
             parts = key.split("|")
             if len(parts) >= 3:
@@ -32,47 +35,102 @@ class SentStore:
                 cleaned.add(k)
         return cleaned
 
-    def _load(self) -> set[str]:
+    def _load(self) -> tuple[set[str], set[str]]:
         if not self.path.exists():
-            return set()
+            return set(), set()
 
         with self.path.open("r", encoding="utf-8") as file:
             data = json.load(file)
 
-        if not isinstance(data, list):
-            return set()
+        if isinstance(data, list):
+            raw_completed = set(data)
+            raw_group: set[str] = set()
+            needs_save = True
+        elif isinstance(data, dict):
+            raw_completed = set(data.get("completed", []))
+            raw_group = set(data.get("group_notified", []))
+            needs_save = False
+        else:
+            return set(), set()
 
-        keys = set(data)
-        cleaned = self._cleanup_old(keys)
-        if len(cleaned) != len(keys):
-            # Persist cleaned version immediately
-            self._keys = cleaned  # temp for save
+        completed = self._cleanup_old(raw_completed)
+        group_notified = self._cleanup_old(raw_group)
+        if len(completed) != len(raw_completed) or len(group_notified) != len(raw_group):
+            needs_save = True
+
+        if needs_save:
+            self._completed = completed
+            self._group_notified = group_notified
+            self._dirty = True
             self._save()
-            return cleaned
-        return keys
+
+        return completed, group_notified
 
     def _save(self) -> None:
-        with self.path.open("w", encoding="utf-8") as file:
-            json.dump(sorted(self._keys), file, ensure_ascii=False, indent=2)
+        payload = {
+            "completed": sorted(self._completed),
+            "group_notified": sorted(self._group_notified),
+        }
+        temp_path = self.path.with_suffix(".tmp")
+        with temp_path.open("w", encoding="utf-8") as file:
+            json.dump(payload, file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, self.path)
+        self._dirty = False
+
+    def flush(self) -> None:
+        with self._lock:
+            if self._dirty:
+                self._save()
+
+    def is_complete(self, key: str) -> bool:
+        return key in self._completed
+
+    def is_group_notified(self, key: str) -> bool:
+        return key in self._group_notified
 
     def has(self, key: str) -> bool:
-        return key in self._keys
+        return self.is_complete(key)
+
+    def mark_group_notified(self, key: str, *, save: bool = True) -> None:
+        with self._lock:
+            self._group_notified.add(key)
+            self._dirty = True
+            if save:
+                self._save()
+
+    def mark_complete(self, key: str, *, save: bool = True) -> None:
+        with self._lock:
+            self._completed.add(key)
+            self._group_notified.discard(key)
+            self._dirty = True
+            if save:
+                self._save()
 
     def add(self, key: str) -> None:
-        self._keys.add(key)
-        self._save()
+        self.mark_complete(key)
 
-    def add_many(self, keys: list[str]) -> None:
-        self._keys.update(keys)
-        self._save()
+    def add_many(self, keys: list[str], *, save: bool = True) -> None:
+        with self._lock:
+            self._completed.update(keys)
+            self._group_notified.difference_update(keys)
+            self._dirty = True
+            if save:
+                self._save()
 
     def count(self) -> int:
-        return len(self._keys)
+        return len(self._completed)
+
+    def group_notified_count(self) -> int:
+        return len(self._group_notified)
 
     def purge_old(self, days: int | None = None) -> int:
-        """Force purge. Returns number of removed entries."""
-        before = len(self._keys)
-        self.max_age_days = days if days is not None else self.max_age_days
-        self._keys = self._cleanup_old(self._keys)
-        self._save()
-        return before - len(self._keys)
+        with self._lock:
+            before = len(self._completed) + len(self._group_notified)
+            if days is not None:
+                self.max_age_days = days
+            self._completed = self._cleanup_old(self._completed)
+            self._group_notified = self._cleanup_old(self._group_notified)
+            self._dirty = True
+            self._save()
+            after = len(self._completed) + len(self._group_notified)
+            return before - after

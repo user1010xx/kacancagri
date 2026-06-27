@@ -1,0 +1,43 @@
+import json
+from datetime import date, timedelta
+from pathlib import Path
+
+from sent_store import SentStore
+
+
+def test_legacy_list_migration(tmp_path: Path):
+    path = tmp_path / "sent_calls.json"
+    old_key = f"1|905551112233|{date.today().strftime('%d.%m.%Y')}|10:00:00|Gelen"
+    path.write_text(json.dumps([old_key]), encoding="utf-8")
+
+    store = SentStore(path)
+    assert store.is_complete(old_key)
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert "completed" in data
+    assert old_key in data["completed"]
+
+
+def test_group_notified_and_complete(tmp_path: Path):
+    store = SentStore(tmp_path / "sent_calls.json")
+    key = "k1"
+
+    store.mark_group_notified(key)
+    assert store.is_group_notified(key)
+    assert not store.is_complete(key)
+
+    store.mark_complete(key)
+    assert store.is_complete(key)
+    assert not store.is_group_notified(key)
+
+
+def test_purge_old(tmp_path: Path):
+    store = SentStore(tmp_path / "sent_calls.json", max_age_days=30)
+    old_date = (date.today() - timedelta(days=60)).strftime("%d.%m.%Y")
+    old_key = f"1|905551112233|{old_date}|10:00:00|Gelen"
+    new_key = f"2|905551112233|{date.today().strftime('%d.%m.%Y')}|11:00:00|Gelen"
+
+    store.add_many([old_key, new_key])
+    removed = store.purge_old()
+    assert removed == 1
+    assert store.is_complete(new_key)
+    assert not store.is_complete(old_key)

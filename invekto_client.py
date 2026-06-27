@@ -23,12 +23,16 @@ def _parse_date(value: str) -> date:
     raise ValueError(f"Geçersiz tarih formatı: {value}")
 
 
-def _match_department(name: str, target: str) -> bool:
+def _match_department(name: str, target: str, *, loose: bool = False) -> bool:
     name_cf = name.strip().casefold()
     target_cf = target.strip().casefold()
     if not name_cf or not target_cf:
         return False
-    return name_cf == target_cf or target_cf in name_cf or name_cf in target_cf
+    if name_cf == target_cf:
+        return True
+    if not loose:
+        return False
+    return target_cf in name_cf or name_cf in target_cf
 
 
 def _request_report(
@@ -164,6 +168,7 @@ def resolve_queue_number(
     end_date: date,
     department_name: str,
     *,
+    loose: bool = False,
     timeout: int = 30,
 ) -> str | None:
     queues = _request_report(
@@ -176,7 +181,7 @@ def resolve_queue_number(
 
     for queue in queues:
         queue_name = str(queue.get("QueueName") or queue.get("Queue") or "").strip()
-        if _match_department(queue_name, department_name):
+        if _match_department(queue_name, department_name, loose=loose):
             for key in ("QUEUE", "Queue", "Queue1", "queue"):
                 value = queue.get(key)
                 if value is not None and str(value).strip():
@@ -188,6 +193,8 @@ def resolve_queue_number(
 def filter_by_department(
     calls: list[dict[str, Any]],
     department_name: str | None,
+    *,
+    loose: bool = False,
 ) -> list[dict[str, Any]]:
     if not department_name:
         return calls
@@ -195,7 +202,7 @@ def filter_by_department(
     return [
         call
         for call in calls
-        if _match_department(_department_name(call), department_name)
+        if _match_department(_department_name(call), department_name, loose=loose)
     ]
 
 
@@ -250,6 +257,7 @@ def fetch_missed_calls(
     *,
     department_name: str | None = None,
     uncompleted_only: bool = False,
+    loose_department_match: bool = False,
     timeout: int = 30,
 ) -> list[dict[str, Any]]:
     if department_name:
@@ -258,6 +266,7 @@ def fetch_missed_calls(
             start_date,
             end_date,
             department_name,
+            loose=loose_department_match,
             timeout=timeout,
         )
         if queue_number:
@@ -277,7 +286,7 @@ def fetch_missed_calls(
         uncompleted_only=uncompleted_only,
         timeout=timeout,
     )
-    return filter_by_department(calls, department_name)
+    return filter_by_department(calls, department_name, loose=loose_department_match)
 
 
 def call_key(call: dict[str, Any]) -> str:
@@ -369,20 +378,37 @@ def _normalize_phone(phone: str) -> str:
     return digits[-10:] if len(digits) >= 10 else digits
 
 
-def get_last_dahili_for_phone(
+def _parse_conversation_datetime(date_value: Any, time_value: Any) -> datetime:
+    text = f"{date_value} {time_value}".strip()
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+    ):
+        try:
+            return datetime.strptime(text[:19], fmt)
+        except ValueError:
+            continue
+    return datetime.min
+
+
+def _extract_dahili_from_record(rec: dict[str, Any]) -> str:
+    return str(
+        rec.get("ExtensionName")
+        or rec.get("Extension")
+        or rec.get("extensionName")
+        or rec.get("extension")
+        or ""
+    ).strip()
+
+
+def build_phone_dahili_cache(
     company_code: str,
-    phone: str,
     days: int = 15,
     timeout: int = 30,
-) -> str | None:
-    """Son 15 günde bu numara ile ilgili herhangi bir arama kaydı varsa,
-    en son kayıttaki dahili adını (ExtensionName öncelikli) döndürür.
-    Kayıt yoksa None döner.
-    """
-    phone_key = _normalize_phone(phone)
-    if not phone_key:
-        return None
-
+) -> dict[str, str]:
+    """Son N günlük görüşme raporundan telefon -> son dahili eşlemesi üretir."""
     end_date = date.today()
     start_date = end_date - timedelta(days=days)
 
@@ -395,43 +421,41 @@ def get_last_dahili_for_phone(
             timeout=timeout,
         )
     except Exception:
-        return None
+        return {}
 
-    matches = []
+    phone_best: dict[str, tuple[datetime, str]] = {}
     for rec in records:
-        rec_phone = _normalize_phone(rec.get("Phone") or rec.get("phone") or "")
-        if rec_phone != phone_key:
+        phone_key = _normalize_phone(rec.get("Phone") or rec.get("phone") or "")
+        dahili = _extract_dahili_from_record(rec)
+        if not phone_key or not dahili:
             continue
 
-        # Dahili adı öncelik: ExtensionName > Extension
-        dahili = (
-            rec.get("ExtensionName")
-            or rec.get("Extension")
-            or rec.get("extensionName")
-            or rec.get("extension")
-            or ""
-        ).strip()
+        when = _parse_conversation_datetime(
+            rec.get("Date") or rec.get("ChekInDate") or rec.get("CreateDate") or "",
+            rec.get("Time") or rec.get("ChekInTime") or rec.get("CreateTime") or "",
+        )
+        prev = phone_best.get(phone_key)
+        if prev is None or when > prev[0]:
+            phone_best[phone_key] = (when, dahili)
 
-        if not dahili:
-            continue
+    return {phone: dahili for phone, (_, dahili) in phone_best.items()}
 
-        # Sıralama için tarih+saat
-        d = rec.get("Date") or rec.get("ChekInDate") or rec.get("CreateDate") or ""
-        t = rec.get("Time") or rec.get("ChekInTime") or rec.get("CreateTime") or ""
-        matches.append((d, t, dahili))
 
-    if not matches:
+def get_last_dahili_for_phone(
+    company_code: str,
+    phone: str,
+    days: int = 15,
+    timeout: int = 30,
+    *,
+    cache: dict[str, str] | None = None,
+) -> str | None:
+    """Son N günde bu numara ile ilgili en son dahiliyi döndürür."""
+    phone_key = _normalize_phone(phone)
+    if not phone_key:
         return None
 
-    def parse_key(item):
-        d, t, _ = item
-        text = f"{d} {t}".strip()
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M"):
-            try:
-                return datetime.strptime(text[:19], fmt)
-            except ValueError:
-                continue
-        return datetime.min
+    if cache is not None:
+        return cache.get(phone_key)
 
-    matches.sort(key=parse_key, reverse=True)
-    return matches[0][2]
+    single_cache = build_phone_dahili_cache(company_code, days=days, timeout=timeout)
+    return single_cache.get(phone_key)

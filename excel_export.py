@@ -36,7 +36,6 @@ def export_missed_calls_excel(
     sheet = workbook.active
     sheet.title = "Kaçan Çağrılar"
 
-    header_font = Font(name="Arial", bold=True, size=11)
     header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
     header_font_white = Font(name="Arial", bold=True, size=11, color="FFFFFF")
     thin_border = Border(

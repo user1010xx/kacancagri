@@ -8,7 +8,8 @@ Invekto PBX üzerinden günlük kaçan çağrıları (missed calls) tespit edip 
 - Belirli departman/kuyruk filtreleme
 - Tekrar gönderimi önleyen kalıcı deduplication (45 güne kadar eski kayıtlar otomatik temizlenir)
 - `/kacancagri` ile tarih aralığı zengin Excel raporu
-- `/stats`, `/kuyruklar`, `/ayar` gibi yönetim komutları
+- Personel yönetimi ve özel mesaj (DM) bildirimi (`telegram_chat_id` ile)
+- `/stats`, `/kuyruklar`, `/ayar`, `/temizle` gibi yönetim komutları
 - Railway (veya benzer) için kolay deploy
 
 ## Gereksinimler
@@ -56,6 +57,7 @@ TELEGRAM_GROUP_CHAT_ID=-1001234567890
 INVEKTO_DEPARTMENT_NAME=Gelen Arama
 POLLING_INTERVAL_SECONDS=60
 NOTIFY_UNCOMPLETED_ONLY=true
+INVEKTO_DEPARTMENT_LOOSE_MATCH=false
 # Railway volume için:
 # DATA_DIR=/app/data
 ```
@@ -73,7 +75,16 @@ NOTIFY_UNCOMPLETED_ONLY=true
 | `/firmakodu 12345678` | Firma kodunu ayarla (8 hane) |
 | `/stats` | Dedup kaydı sayısı, son poll bilgisi |
 | `/kuyruklar` | Invekto'daki kuyruk/departman adlarını listele |
-| `/kacancagri 15.06.2026, 25.06.2026` | Tarih aralığı için Excel raporu (zengin sütunlar) |
+| `/kacancagri 15.06.2026, 25.06.2026` | Tarih aralığı için Excel raporu (tüm kaçan çağrılar) |
+| `/personelekle 105 Ahmet @ahmet` | Personel ekle/güncelle |
+| `/personelsil 105` | Personel sil |
+| `/personeller` | Kayıtlı personelleri listele |
+| `/temizle` | Eski dedup kayıtlarını temizle |
+| Excel (.xlsx) yükle | 3 sütun: dahili, ad, @username |
+
+**Özel mesaj (DM) için:** Personel, bota özel sohbetten `/start` yazmalıdır. Böylece `telegram_chat_id` kaydedilir ve kaçan çağrı bildirimi DM ile iletilir.
+
+**Not:** `NOTIFY_UNCOMPLETED_ONLY=true` iken anlık bildirimler sadece tamamlanmamış çağrıları kapsar; `/kacancagri` Excel raporu her zaman tüm kaçan çağrıları listeler.
 
 ## Excel Raporu
 
@@ -141,6 +152,8 @@ Bu uyarıların hiçbiri **çalışmayı etkilemez**. Güvenle kullanabilirsin.
 - Her poll sadece **bugünün** verisini çeker.
 - Dedup anahtarı: `ID|Phone|dd.mm.yyyy|saat|Departman`
 - Başlangıçta bugünün çağrıları seed edilir (restart'ta tekrar bildirim önlenir).
+- Görüşme geçmişi (15 gün) poll başına tek API çağrısıyla cache'lenir.
+- DM başarısız olursa kayıt tamamlanmaz; sonraki poll'da özel mesaj yeniden denenir.
 
 ## Geliştirme
 
