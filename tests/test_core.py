@@ -1,7 +1,10 @@
 import pytest
 from datetime import date
+from unittest.mock import patch
 
 from invekto_client import (
+    REPORT_TYPE_MISS_CALL,
+    fetch_missed_calls,
     parse_command_dates,
     call_key,
     format_call_message,
@@ -102,3 +105,24 @@ def test_is_missed_and_uncompleted():
     assert _is_uncompleted({"IsCompleted": False})
     assert _is_uncompleted({"IsCompleted": "0"})
     assert not _is_uncompleted({"IsCompleted": True})
+
+
+def test_fetch_missed_calls_uses_miss_call_report_only():
+    today = date(2026, 6, 27)
+    api_rows = [
+        {"ID": "1", "Phone": "905551112233", "Queue": "Gelen Arama", "Status": "2"},
+        {"ID": "2", "Phone": "905551112244", "Queue": "Satış", "Status": "2"},
+    ]
+
+    with patch("invekto_client._request_report", return_value=api_rows) as mock_request:
+        calls = fetch_missed_calls(
+            "12345678",
+            today,
+            today,
+            department_name="Gelen Arama",
+        )
+
+    mock_request.assert_called_once()
+    assert mock_request.call_args[0][3] == REPORT_TYPE_MISS_CALL
+    assert len(calls) == 1
+    assert calls[0]["Phone"] == "905551112233"

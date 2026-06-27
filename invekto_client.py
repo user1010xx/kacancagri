@@ -260,25 +260,11 @@ def fetch_missed_calls(
     loose_department_match: bool = False,
     timeout: int = 30,
 ) -> list[dict[str, Any]]:
-    if department_name:
-        queue_number = resolve_queue_number(
-            company_code,
-            start_date,
-            end_date,
-            department_name,
-            loose=loose_department_match,
-            timeout=timeout,
-        )
-        if queue_number:
-            return _fetch_from_queue_detail(
-                company_code,
-                start_date,
-                end_date,
-                queue_number,
-                uncompleted_only=uncompleted_only,
-                timeout=timeout,
-            )
+    """Kaçan çağrıları Invekto'nun kaçan çağrı raporundan (reportType 2) çeker.
 
+    Invekto artık kaçan çağrıları departman detay raporunda (reportType 4) değil,
+    ayrı kaçan çağrı raporunda sunuyor. Departman filtresi client-side uygulanır.
+    """
     calls = _fetch_from_miss_call_report(
         company_code,
         start_date,
