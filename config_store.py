@@ -23,7 +23,9 @@ class ConfigStore:
             "Gelen Arama,MESAI DIŞI",
         ).strip()
         self.department_names = [
-            part.strip() for part in raw_departments.split(",") if part.strip()
+            part.strip().strip('"').strip("'")
+            for part in raw_departments.split(",")
+            if part.strip().strip('"').strip("'")
         ]
         self.department_name = ", ".join(self.department_names)
         self.target_chat_id, self._chat_id_error = self._read_chat_id()

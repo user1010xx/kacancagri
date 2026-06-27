@@ -91,6 +91,11 @@ try:
 except ValueError:
     DAILY_REPORT_HOUR = 10
 
+
+def _report_today() -> date:
+    """Invekto rapor tarihi ile uyumlu 'bugün' (Railway UTC olsa bile TR takvimi)."""
+    return dtm.now(REPORT_TZ).date()
+
 HELP_TEXT = (
     "Merhaba! Bu bot Invekto kaçan çağrıları Telegram'a iletir.\n\n"
     "Komutlar:\n"
@@ -127,7 +132,7 @@ def _record_delivered_notification(notify_ctx) -> None:
         return
     personnel = notify_ctx.personnel or {}
     personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
-    call_date = _parse_call_date(notify_ctx.call_time_str) or date.today()
+    call_date = _parse_call_date(notify_ctx.call_time_str) or _report_today()
     delivered_store.add(
         call_key=notify_ctx.key,
         phone=notify_ctx.phone,
@@ -406,7 +411,7 @@ async def kuyruklar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.message.reply_text("Önce /firmakodu komutu ile firma kodunu ayarlayın.")
         return
 
-    today = date.today()
+    today = _report_today()
     try:
         queues = await asyncio.to_thread(
             get_available_queues,
@@ -618,7 +623,7 @@ async def _process_missed_calls_for_date(
 async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_now, failed_dm = await _process_missed_calls_for_date(
         context.bot,
-        date.today(),
+        _report_today(),
         context=context,
     )
 
@@ -697,7 +702,7 @@ async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     delivered_store.purge_expired()
-    yesterday = date.today() - timedelta(days=1)
+    yesterday = _report_today() - timedelta(days=1)
     report_label = yesterday.strftime("%d.%m.%Y")
     rows = delivered_store.get_by_call_date(yesterday)
 
