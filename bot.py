@@ -2,9 +2,10 @@ import asyncio
 import logging
 import os
 import time
-from datetime import date, datetime as dtm, time as dt_time
+from datetime import date, datetime as dtm, timedelta, time as dt_time
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import Update
@@ -18,7 +19,8 @@ from telegram.ext import (
 )
 
 from config_store import ConfigStore
-from excel_export import export_missed_calls_excel, sort_calls
+from delivered_store import DeliveredStore
+from excel_export import export_delivered_report_excel, export_missed_calls_excel, sort_calls
 from personnel_store import PersonnelStore
 from invekto_client import (
     InvektoError,
@@ -29,6 +31,7 @@ from invekto_client import (
     parse_command_dates,
 )
 from notifications import (
+    NotifyKind,
     build_missed_call_context,
     counts_as_failed_dm,
     deliver_missed_call_notification,
@@ -76,6 +79,13 @@ logger = logging.getLogger(__name__)
 config = ConfigStore(DATA_DIR / "config.json")
 sent_store = SentStore(DATA_DIR / "sent_calls.json")
 personnel_store = PersonnelStore(DATA_DIR / "personnels.json")
+delivered_store = DeliveredStore(DATA_DIR / "delivered_calls.json", retention_hours=24)
+
+REPORT_TZ = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Istanbul"))
+try:
+    DAILY_REPORT_HOUR = max(0, min(int(os.getenv("DAILY_REPORT_HOUR", "10")), 23))
+except ValueError:
+    DAILY_REPORT_HOUR = 10
 
 HELP_TEXT = (
     "Merhaba! Bu bot Invekto kaçan çağrıları Telegram'a iletir.\n\n"
@@ -98,6 +108,28 @@ HELP_TEXT = (
 
 def _require_company_code() -> str | None:
     return config.company_code or None
+
+
+def _parse_call_date(call_time_str: str) -> date | None:
+    try:
+        part = call_time_str.strip().split()[0]
+        return dtm.strptime(part, "%d.%m.%Y").date()
+    except Exception:
+        return None
+
+
+def _record_delivered_notification(notify_ctx) -> None:
+    if notify_ctx.kind != NotifyKind.PERSONNEL:
+        return
+    personnel = notify_ctx.personnel or {}
+    personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
+    call_date = _parse_call_date(notify_ctx.call_time_str) or date.today()
+    delivered_store.add(
+        call_key=notify_ctx.key,
+        phone=notify_ctx.phone,
+        personel_adi=personel_adi,
+        call_date=call_date,
+    )
 
 
 def _fetch_kwargs() -> dict:
@@ -512,6 +544,8 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
         if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
             sent_store.mark_complete(notify_ctx.key, save=False)
             sent_now += 1
+            if notify_ctx.kind == NotifyKind.PERSONNEL and private_ok:
+                _record_delivered_notification(notify_ctx)
 
     sent_store.flush()
 
@@ -529,6 +563,59 @@ async def purge_old_sent_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
     removed = sent_store.purge_old()
     if removed:
         logger.info("Periyodik temizlik: %s eski dedup kaydı silindi.", removed)
+
+
+async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Önceki gün personele başarıyla iletilen kaçan çağrıları Excel olarak gruba gönderir."""
+    if not config.target_chat_id:
+        return
+
+    delivered_store.purge_expired()
+    yesterday = date.today() - timedelta(days=1)
+    report_label = yesterday.strftime("%d.%m.%Y")
+    rows = delivered_store.get_by_call_date(yesterday)
+
+    if not rows:
+        await context.bot.send_message(
+            chat_id=config.target_chat_id,
+            text=f"📊 {report_label} tarihinde personele iletilen kaçan çağrı bulunamadı.",
+        )
+        delivered_store.purge_call_date(yesterday)
+        return
+
+    filename = f"iletilen_kacancagri_{yesterday.strftime('%d-%m-%Y')}.xlsx"
+    export_path = DATA_DIR / "exports" / filename
+
+    try:
+        await asyncio.to_thread(export_delivered_report_excel, rows, export_path)
+        caption = (
+            f"📊 Personele İletilen Kaçan Çağrılar\n"
+            f"Tarih: {report_label}\n"
+            f"Toplam: {len(rows)}"
+        )
+        with export_path.open("rb") as excel_file:
+            await context.bot.send_document(
+                chat_id=config.target_chat_id,
+                document=excel_file,
+                filename=filename,
+                caption=caption,
+            )
+        removed = delivered_store.purge_call_date(yesterday)
+        logger.info(
+            "Günlük iletilen rapor gönderildi: %s (%s kayıt, %s silindi).",
+            report_label,
+            len(rows),
+            removed,
+        )
+    except Exception as exc:
+        logger.exception("Günlük iletilen raporu gönderilemedi")
+        await context.bot.send_message(
+            chat_id=config.target_chat_id,
+            text=f"Günlük iletilen çağrı raporu oluşturulamadı: {exc}",
+        )
+    finally:
+        if export_path.exists():
+            export_path.unlink(missing_ok=True)
 
 
 async def post_init(application: Application) -> None:
@@ -592,8 +679,13 @@ def main() -> None:
     )
     application.job_queue.run_daily(
         purge_old_sent_calls,
-        time=dt_time(hour=3, minute=0),
+        time=dt_time(hour=3, minute=0, tzinfo=REPORT_TZ),
         name="sent-store-purge",
+    )
+    application.job_queue.run_daily(
+        send_daily_delivered_report,
+        time=dt_time(hour=DAILY_REPORT_HOUR, minute=0, tzinfo=REPORT_TZ),
+        name="daily-delivered-report",
     )
 
     logger.info("Polling başlıyor...")

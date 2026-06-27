@@ -107,3 +107,52 @@ def export_missed_calls_excel(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(output_path)
     return output_path
+
+
+def export_delivered_report_excel(
+    rows: list[dict],
+    output_path: Path,
+) -> Path:
+    """Personele başarıyla iletilen kaçan çağrılar: Numara, Personel Adı, İletilen Saat."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "İletilen Çağrılar"
+
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_font_white = Font(name="Arial", bold=True, size=11, color="FFFFFF")
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+    center_align = Alignment(horizontal="center", vertical="center")
+
+    headers = ["Numara", "Personel Adı", "İletilen Saat"]
+    for col, header in enumerate(headers, start=1):
+        cell = sheet.cell(row=1, column=col, value=header)
+        cell.font = header_font_white
+        cell.fill = header_fill
+        cell.alignment = center_align
+        cell.border = thin_border
+
+    for row_idx, row in enumerate(rows, start=2):
+        values = [
+            row.get("phone", ""),
+            row.get("personel_adi", ""),
+            row.get("notified_at", ""),
+        ]
+        for col, value in enumerate(values, start=1):
+            cell = sheet.cell(row=row_idx, column=col, value=value)
+            cell.border = thin_border
+            if col == 3:
+                cell.alignment = center_align
+
+    widths = [18, 24, 22]
+    for i, w in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(i)].width = w
+
+    sheet.freeze_panes = "A2"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook.save(output_path)
+    return output_path
