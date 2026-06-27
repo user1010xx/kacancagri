@@ -87,13 +87,31 @@ def private_chat_id(personnel: dict[str, str]) -> int | None:
         return None
 
 
+def _format_personel_name(name: str) -> str:
+    text = str(name).strip()
+    if not text:
+        return "Personel"
+
+    def _cap(part: str) -> str:
+        return part[:1].upper() + part[1:].lower() if part else part
+
+    formatted: list[str] = []
+    for token in text.split():
+        if "-" in token:
+            formatted.append("-".join(_cap(p) for p in token.split("-")))
+        else:
+            formatted.append(_cap(token))
+    return " ".join(formatted)
+
+
 def build_private_text(personel_adi: str, phone: str, call_time_str: str) -> str:
+    display_name = _format_personel_name(personel_adi)
     return (
-        "Kaçan Çağrı\n\n"
-        f"{personel_adi}\n"
-        f"{phone}\n"
-        f"{call_time_str}\n\n"
-        "Üye adayımızı arar mısın ?"
+        "🔴 Kaçan Çağrı\n\n"
+        f"👤 Personel: {display_name}\n"
+        f"📞 Telefon: {phone}\n"
+        f"🕐 Arama: {call_time_str}\n\n"
+        "Üye adayımızı arar mısınız?"
     )
 
 

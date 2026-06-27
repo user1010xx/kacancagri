@@ -2,6 +2,7 @@ from notifications import (
     NotifyKind,
     build_group_text,
     build_missed_call_context,
+    build_private_text,
     private_chat_id,
     should_mark_complete,
 )
@@ -18,6 +19,16 @@ class _FakeSentStore:
 
     def is_group_notified(self, key: str) -> bool:
         return key in self.group_notified
+
+
+def test_build_private_text_format():
+    msg = build_private_text("seda", "905301718596", "27.06.2026 11:02:13")
+    assert "🔴 Kaçan Çağrı" in msg
+    assert "👤 Personel: Seda" in msg
+    assert "📞 Telefon: 905301718596" in msg
+    assert "🕐 Arama: 27.06.2026 11:02:13" in msg
+    assert "Üye adayımızı arar mısınız?" in msg
+    assert "aram mısın" not in msg
 
 
 def test_build_context_matches_personnel_by_name(tmp_path):
