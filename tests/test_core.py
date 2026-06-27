@@ -72,6 +72,39 @@ def test_filter_by_department_loose():
     assert len(filtered) == 2
 
 
+def test_filter_by_multiple_departments():
+    calls = [
+        {"Queue": "Gelen Arama", "Phone": "1"},
+        {"Queue": "MESAI DIŞI", "Phone": "2"},
+        {"Queue": "ANA MENU", "Phone": "3"},
+    ]
+    filtered = filter_by_department(calls, ["Gelen Arama", "MESAI DIŞI"])
+    assert len(filtered) == 2
+    assert {c["Phone"] for c in filtered} == {"1", "2"}
+
+
+def test_filter_by_department_csv_string():
+    calls = [
+        {"Queue": "Gelen Arama", "Phone": "1"},
+        {"Queue": "MESAI DIŞI", "Phone": "2"},
+    ]
+    filtered = filter_by_department(calls, "Gelen Arama,MESAI DIŞI")
+    assert len(filtered) == 2
+
+
+def test_call_key_without_id_uses_phone():
+    sample = {
+        "Phone": "905442231772",
+        "CreateDate": "2026-06-27T00:00:00",
+        "CreateTime": "14:57:05",
+        "Queue": "Gelen Arama",
+    }
+    key = call_key(sample)
+    assert key.startswith("905442231772|905442231772|")
+    assert "27.06.2026" in key
+    assert "Gelen Arama" in key
+
+
 def test_match_department_modes():
     assert _match_department("Gelen Arama", "Gelen Arama")
     assert not _match_department("gelen arama ekibi", "Gelen Arama")

@@ -134,9 +134,14 @@ def _record_delivered_notification(notify_ctx) -> None:
 
 def _fetch_kwargs() -> dict:
     return {
-        "department_name": config.department_name or None,
+        "department_names": config.department_names or None,
         "loose_department_match": config.department_loose_match,
     }
+
+
+def _env_flag(name: str, *, default: bool = False) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _allowed_chat_filter() -> filters.MessageFilter:
@@ -468,31 +473,18 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
     logger.exception("Beklenmeyen hata: %s", context.error)
 
 
-async def _seed_today_sent_calls() -> int:
+async def _process_missed_calls_for_date(
+    bot,
+    target_date: date,
+    *,
+    context: ContextTypes.DEFAULT_TYPE | None = None,
+    throttle_seconds: float = 0.0,
+) -> tuple[int, int]:
+    """Belirli bir günün kaçan çağrılarını işler. (bildirilen_sayı, başarısız_dm)"""
     company_code = _require_company_code()
     if not company_code:
-        return 0
+        return 0, 0
 
-    today = date.today()
-    calls = await asyncio.to_thread(
-        fetch_missed_calls,
-        company_code,
-        today,
-        today,
-        uncompleted_only=config.notify_uncompleted_only,
-        **_fetch_kwargs(),
-    )
-    keys = [call_key(call) for call in calls]
-    sent_store.add_many(keys)
-    return len(keys)
-
-
-async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
-    company_code = _require_company_code()
-    if not company_code:
-        return
-
-    today = date.today()
     sent_now = 0
     failed_dm = 0
     api_started = time.monotonic()
@@ -501,21 +493,27 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
         calls = await asyncio.to_thread(
             fetch_missed_calls,
             company_code,
-            today,
-            today,
+            target_date,
+            target_date,
             uncompleted_only=config.notify_uncompleted_only,
             **_fetch_kwargs(),
         )
         api_ms = int((time.monotonic() - api_started) * 1000)
-        _update_bot_data(
-            context,
-            last_api_duration_ms=api_ms,
-            last_poll_error="-",
-        )
+        if context is not None:
+            _update_bot_data(
+                context,
+                last_api_duration_ms=api_ms,
+                last_poll_error="-",
+            )
     except Exception as exc:
-        logger.warning("Anlık kaçan çağrı kontrolü başarısız: %s", exc)
-        _update_bot_data(context, last_poll_error=str(exc))
-        return
+        logger.warning(
+            "Kaçan çağrı kontrolü başarısız (%s): %s",
+            target_date.isoformat(),
+            exc,
+        )
+        if context is not None:
+            _update_bot_data(context, last_poll_error=str(exc))
+        return 0, 0
 
     dahili_cache = await asyncio.to_thread(build_phone_dahili_cache, company_code, 15)
 
@@ -531,7 +529,7 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         private_ok, group_ok = await deliver_missed_call_notification(
             notify_ctx,
-            bot=context.bot,
+            bot=bot,
             target_chat_id=config.target_chat_id,
         )
 
@@ -547,7 +545,19 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
             if notify_ctx.kind == NotifyKind.PERSONNEL and private_ok:
                 _record_delivered_notification(notify_ctx)
 
+        if throttle_seconds > 0:
+            await asyncio.sleep(throttle_seconds)
+
     sent_store.flush()
+    return sent_now, failed_dm
+
+
+async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
+    sent_now, failed_dm = await _process_missed_calls_for_date(
+        context.bot,
+        date.today(),
+        context=context,
+    )
 
     _update_bot_data(
         context,
@@ -557,6 +567,51 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
         if context.bot_data
         else failed_dm,
     )
+
+
+async def _backfill_missed_calls(application: Application) -> None:
+    """Deploy sonrası kaçırılmış günleri bir kez işler (config.json'da işaretlenir)."""
+    if not _env_flag("BACKFILL_ON_STARTUP", default=True):
+        return
+
+    company_code = _require_company_code()
+    if not company_code:
+        return
+
+    targets: list[date] = []
+    if _env_flag("BACKFILL_YESTERDAY", default=True):
+        targets.append(date.today() - timedelta(days=1))
+
+    for raw in os.getenv("BACKFILL_DATES", "").split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        try:
+            targets.append(dtm.strptime(part, "%d.%m.%Y").date())
+        except ValueError:
+            logger.warning("BACKFILL_DATES geçersiz tarih atlandı: %s", part)
+
+    seen: set[date] = set()
+    throttle = float(os.getenv("BACKFILL_THROTTLE_SECONDS", "0.15"))
+
+    for target in targets:
+        if target in seen or config.is_backfilled(target):
+            continue
+        seen.add(target)
+
+        logger.info("%s için backfill başlıyor...", target.isoformat())
+        sent_now, failed_dm = await _process_missed_calls_for_date(
+            application.bot,
+            target,
+            throttle_seconds=throttle,
+        )
+        config.mark_backfilled(target)
+        logger.info(
+            "Backfill tamamlandı: %s | bildirim=%s | başarısız_dm=%s",
+            target.isoformat(),
+            sent_now,
+            failed_dm,
+        )
 
 
 async def purge_old_sent_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -625,12 +680,12 @@ async def post_init(application: Application) -> None:
     me = await application.bot.get_me()
     logger.info("Bot aktif: @%s", me.username)
     logger.info("Yetkili grup ID: %s", config.target_chat_id)
+    logger.info("İzlenen departmanlar: %s", config.department_name or "Tümü")
 
     try:
-        seeded = await _seed_today_sent_calls()
-        logger.info("Başlangıçta %s mevcut kaçan çağrı işaretlendi.", seeded)
+        await _backfill_missed_calls(application)
     except Exception as exc:
-        logger.warning("Başlangıç seed işlemi başarısız: %s", exc)
+        logger.warning("Backfill işlemi başarısız: %s", exc)
 
 
 def main() -> None:

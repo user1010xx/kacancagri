@@ -1,10 +1,12 @@
 import json
 import os
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 DEFAULT_RUNTIME_CONFIG: dict[str, Any] = {
     "company_code": "",
+    "backfilled_dates": [],
 }
 
 
@@ -16,7 +18,14 @@ class ConfigStore:
         self._load_env()
 
     def _load_env(self) -> None:
-        self.department_name = os.getenv("INVEKTO_DEPARTMENT_NAME", "").strip()
+        raw_departments = os.getenv(
+            "INVEKTO_DEPARTMENT_NAME",
+            "Gelen Arama,MESAI DIŞI",
+        ).strip()
+        self.department_names = [
+            part.strip() for part in raw_departments.split(",") if part.strip()
+        ]
+        self.department_name = ", ".join(self.department_names)
         self.target_chat_id, self._chat_id_error = self._read_chat_id()
         self.polling_interval_seconds = max(
             int(os.getenv("POLLING_INTERVAL_SECONDS", "30")),
@@ -65,6 +74,19 @@ class ConfigStore:
         self._runtime["company_code"] = value.strip()
         self._save_runtime()
 
+    def is_backfilled(self, target: date) -> bool:
+        key = target.isoformat()
+        stored = self._runtime.get("backfilled_dates", [])
+        return isinstance(stored, list) and key in stored
+
+    def mark_backfilled(self, target: date) -> None:
+        stored = list(self._runtime.get("backfilled_dates", []))
+        key = target.isoformat()
+        if key not in stored:
+            stored.append(key)
+            self._runtime["backfilled_dates"] = stored
+            self._save_runtime()
+
     def validate(self) -> list[str]:
         errors: list[str] = []
         if not os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
@@ -76,7 +98,7 @@ class ConfigStore:
         return errors
 
     def as_text(self) -> str:
-        department = self.department_name or "Tümü"
+        department = self.department_name or "Tümü (filtre yok)"
         company = self.company_code or "Ayarlanmadı (/firmakodu)"
         notify_mode = (
             "Sadece tamamlanmamış" if self.notify_uncompleted_only else "Tümü"

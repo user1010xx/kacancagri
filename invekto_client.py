@@ -190,19 +190,35 @@ def resolve_queue_number(
     return None
 
 
+def _parse_department_names(
+    department_names: str | list[str] | None,
+) -> list[str] | None:
+    if department_names is None:
+        return None
+    if isinstance(department_names, list):
+        parsed = [name.strip() for name in department_names if str(name).strip()]
+        return parsed or None
+    parts = [part.strip() for part in str(department_names).split(",") if part.strip()]
+    return parts or None
+
+
 def filter_by_department(
     calls: list[dict[str, Any]],
-    department_name: str | None,
+    department_names: str | list[str] | None,
     *,
     loose: bool = False,
 ) -> list[dict[str, Any]]:
-    if not department_name:
+    names = _parse_department_names(department_names)
+    if not names:
         return calls
 
     return [
         call
         for call in calls
-        if _match_department(_department_name(call), department_name, loose=loose)
+        if any(
+            _match_department(_department_name(call), name, loose=loose)
+            for name in names
+        )
     ]
 
 
@@ -256,6 +272,7 @@ def fetch_missed_calls(
     end_date: date,
     *,
     department_name: str | None = None,
+    department_names: list[str] | None = None,
     uncompleted_only: bool = False,
     loose_department_match: bool = False,
     timeout: int = 30,
@@ -265,6 +282,7 @@ def fetch_missed_calls(
     Invekto artık kaçan çağrıları departman detay raporunda (reportType 4) değil,
     ayrı kaçan çağrı raporunda sunuyor. Departman filtresi client-side uygulanır.
     """
+    names = department_names or _parse_department_names(department_name)
     calls = _fetch_from_miss_call_report(
         company_code,
         start_date,
@@ -272,14 +290,15 @@ def fetch_missed_calls(
         uncompleted_only=uncompleted_only,
         timeout=timeout,
     )
-    return filter_by_department(calls, department_name, loose=loose_department_match)
+    return filter_by_department(calls, names, loose=loose_department_match)
 
 
 def call_key(call: dict[str, Any]) -> str:
     call_date, call_time = _call_datetime(call)
+    call_id = call.get("ID") or call.get("CallID") or call.get("Phone") or ""
     return "|".join(
         [
-            str(call.get("ID", "")),
+            str(call_id),
             str(call.get("Phone", "")),
             call_date,
             call_time,
