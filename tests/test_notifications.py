@@ -17,8 +17,14 @@ class _FakeSentStore:
     def is_complete(self, key: str) -> bool:
         return key in self.completed
 
+    def is_complete_any(self, keys: list[str]) -> bool:
+        return any(key in self.completed for key in keys)
+
     def is_group_notified(self, key: str) -> bool:
         return key in self.group_notified
+
+    def is_group_notified_any(self, keys: list[str]) -> bool:
+        return any(key in self.group_notified for key in keys)
 
 
 def test_build_private_text_format():

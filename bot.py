@@ -26,6 +26,8 @@ from invekto_client import (
     InvektoError,
     build_phone_dahili_cache,
     call_key,
+    call_key_variants,
+    dedupe_calls_by_key,
     fetch_missed_calls,
     get_available_queues,
     parse_command_dates,
@@ -81,6 +83,7 @@ config = ConfigStore(DATA_DIR / "config.json")
 sent_store = SentStore(DATA_DIR / "sent_calls.json")
 personnel_store = PersonnelStore(DATA_DIR / "personnels.json")
 delivered_store = DeliveredStore(DATA_DIR / "delivered_calls.json", retention_hours=24)
+_MISSED_CALL_PROCESS_LOCK = asyncio.Lock()
 
 REPORT_TZ = ZoneInfo(os.getenv("BOT_TIMEZONE", "Europe/Istanbul"))
 try:
@@ -172,9 +175,9 @@ def _apply_time_cutoff(calls: list, target_date: date, cutoff: str) -> list:
     before, after = split_calls_by_time(calls, cutoff)
     skipped = 0
     for call in before:
-        key = call_key(call)
-        if not sent_store.is_complete(key):
-            sent_store.mark_complete(key, save=False)
+        keys = call_key_variants(call)
+        if not sent_store.is_complete_any(keys):
+            sent_store.mark_complete_keys(keys, save=False)
             skipped += 1
 
     if skipped:
@@ -533,79 +536,83 @@ async def _process_missed_calls_for_date(
     after_time: str | None = None,
 ) -> tuple[int, int]:
     """Belirli bir günün kaçan çağrılarını işler. (bildirilen_sayı, başarısız_dm)"""
-    company_code = _require_company_code()
-    if not company_code:
-        return 0, 0
+    async with _MISSED_CALL_PROCESS_LOCK:
+        company_code = _require_company_code()
+        if not company_code:
+            return 0, 0
 
-    sent_now = 0
-    failed_dm = 0
-    api_started = time.monotonic()
+        sent_now = 0
+        failed_dm = 0
+        api_started = time.monotonic()
 
-    try:
-        calls = await asyncio.to_thread(
-            fetch_missed_calls,
-            company_code,
-            target_date,
-            target_date,
-            uncompleted_only=config.notify_uncompleted_only,
-            **_fetch_kwargs(),
-        )
-        api_ms = int((time.monotonic() - api_started) * 1000)
-        if context is not None:
-            _update_bot_data(
-                context,
-                last_api_duration_ms=api_ms,
-                last_poll_error="-",
+        try:
+            calls = await asyncio.to_thread(
+                fetch_missed_calls,
+                company_code,
+                target_date,
+                target_date,
+                uncompleted_only=config.notify_uncompleted_only,
+                **_fetch_kwargs(),
             )
-    except Exception as exc:
-        logger.warning(
-            "Kaçan çağrı kontrolü başarısız (%s): %s",
-            target_date.isoformat(),
-            exc,
-        )
-        if context is not None:
-            _update_bot_data(context, last_poll_error=str(exc))
-        return 0, 0
+            api_ms = int((time.monotonic() - api_started) * 1000)
+            if context is not None:
+                _update_bot_data(
+                    context,
+                    last_api_duration_ms=api_ms,
+                    last_poll_error="-",
+                )
+        except Exception as exc:
+            logger.warning(
+                "Kaçan çağrı kontrolü başarısız (%s): %s",
+                target_date.isoformat(),
+                exc,
+            )
+            if context is not None:
+                _update_bot_data(context, last_poll_error=str(exc))
+            return 0, 0
 
-    cutoff = after_time or _cutoff_time_for_date(target_date)
-    if cutoff:
-        calls = _apply_time_cutoff(calls, target_date, cutoff)
+        calls = dedupe_calls_by_key(calls)
 
-    dahili_cache = await asyncio.to_thread(build_phone_dahili_cache, company_code, 15)
+        cutoff = after_time or _cutoff_time_for_date(target_date)
+        if cutoff:
+            calls = _apply_time_cutoff(calls, target_date, cutoff)
 
-    for call in calls:
-        notify_ctx = build_missed_call_context(
-            call,
-            dahili_cache=dahili_cache,
-            personnel_store=personnel_store,
-            sent_store=sent_store,
-        )
-        if notify_ctx is None:
-            continue
+        dahili_cache = await asyncio.to_thread(build_phone_dahili_cache, company_code, 15)
 
-        private_ok, group_ok = await deliver_missed_call_notification(
-            notify_ctx,
-            bot=bot,
-            target_chat_id=config.target_chat_id,
-        )
+        for call in calls:
+            notify_ctx = build_missed_call_context(
+                call,
+                dahili_cache=dahili_cache,
+                personnel_store=personnel_store,
+                sent_store=sent_store,
+            )
+            if notify_ctx is None:
+                continue
 
-        if counts_as_failed_dm(notify_ctx, private_ok):
-            failed_dm += 1
+            key_variants = call_key_variants(call)
 
-        if group_ok and not notify_ctx.retry_private_only:
-            sent_store.mark_group_notified(notify_ctx.key, save=False)
+            private_ok, group_ok = await deliver_missed_call_notification(
+                notify_ctx,
+                bot=bot,
+                target_chat_id=config.target_chat_id,
+            )
 
-        if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
-            sent_store.mark_complete(notify_ctx.key, save=False)
-            sent_now += 1
-            if notify_ctx.kind == NotifyKind.PERSONNEL and private_ok:
-                _record_delivered_notification(notify_ctx)
+            if counts_as_failed_dm(notify_ctx, private_ok):
+                failed_dm += 1
 
-        if throttle_seconds > 0:
-            await asyncio.sleep(throttle_seconds)
+            if group_ok and not notify_ctx.retry_private_only:
+                sent_store.mark_group_notified_keys(key_variants, save=True)
 
-    sent_store.flush()
-    return sent_now, failed_dm
+            if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
+                sent_store.mark_complete_keys(key_variants, save=True)
+                sent_now += 1
+                if notify_ctx.kind == NotifyKind.PERSONNEL and private_ok:
+                    _record_delivered_notification(notify_ctx)
+
+            if throttle_seconds > 0:
+                await asyncio.sleep(throttle_seconds)
+
+        return sent_now, failed_dm
 
 
 async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -795,6 +802,7 @@ def main() -> None:
         interval=config.polling_interval_seconds,
         first=5,
         name="missed-call-poller",
+        max_instances=1,
     )
     application.job_queue.run_daily(
         purge_old_sent_calls,

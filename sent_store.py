@@ -15,13 +15,11 @@ class SentStore:
         self._dirty = False
 
     def _extract_date_from_key(self, key: str) -> date | None:
-        try:
-            parts = key.split("|")
-            if len(parts) >= 3:
-                d = parts[2].strip()
-                return datetime.strptime(d, "%d.%m.%Y").date()
-        except Exception:
-            pass
+        for part in key.split("|"):
+            try:
+                return datetime.strptime(part.strip(), "%d.%m.%Y").date()
+            except Exception:
+                continue
         return None
 
     def _cleanup_old(self, keys: set[str]) -> set[str]:
@@ -85,8 +83,14 @@ class SentStore:
     def is_complete(self, key: str) -> bool:
         return key in self._completed
 
+    def is_complete_any(self, keys: list[str]) -> bool:
+        return any(key in self._completed for key in keys)
+
     def is_group_notified(self, key: str) -> bool:
         return key in self._group_notified
+
+    def is_group_notified_any(self, keys: list[str]) -> bool:
+        return any(key in self._group_notified for key in keys)
 
     def has(self, key: str) -> bool:
         return self.is_complete(key)
@@ -102,6 +106,23 @@ class SentStore:
         with self._lock:
             self._completed.add(key)
             self._group_notified.discard(key)
+            self._dirty = True
+            if save:
+                self._save()
+
+    def mark_complete_keys(self, keys: list[str], *, save: bool = True) -> None:
+        with self._lock:
+            for key in keys:
+                self._completed.add(key)
+                self._group_notified.discard(key)
+            self._dirty = True
+            if save:
+                self._save()
+
+    def mark_group_notified_keys(self, keys: list[str], *, save: bool = True) -> None:
+        with self._lock:
+            for key in keys:
+                self._group_notified.add(key)
             self._dirty = True
             if save:
                 self._save()

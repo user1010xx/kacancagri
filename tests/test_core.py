@@ -45,9 +45,7 @@ def test_call_key_and_format():
         "Status": "2",
     }
     key = call_key(sample)
-    assert "12345" in key
-    assert "905551112233" in key
-    assert "25.06.2026" in key
+    assert key == "905551112233|25.06.2026|14:22:11|Gelen Arama"
 
     msg = format_call_message(sample)
     assert "Kaçan Çağrı" in msg
@@ -122,9 +120,33 @@ def test_call_key_without_id_uses_phone():
         "Queue": "Gelen Arama",
     }
     key = call_key(sample)
-    assert key.startswith("905442231772|905442231772|")
-    assert "27.06.2026" in key
-    assert "Gelen Arama" in key
+    assert key == "905442231772|27.06.2026|14:57:05|Gelen Arama"
+
+
+def test_dedupe_calls_by_key():
+    from invekto_client import dedupe_calls_by_key
+
+    calls = [
+        {"Phone": "905551112233", "CreateDate": "2026-06-27", "CreateTime": "10:00:00", "Queue": "Gelen Arama"},
+        {"Phone": "905551112233", "CreateDate": "2026-06-27", "CreateTime": "10:00:00", "Queue": "Gelen Arama"},
+        {"Phone": "905551112244", "CreateDate": "2026-06-27", "CreateTime": "11:00:00", "Queue": "Gelen Arama"},
+    ]
+    assert len(dedupe_calls_by_key(calls)) == 2
+
+
+def test_call_key_variants_include_legacy():
+    from invekto_client import call_key_variants
+
+    sample = {
+        "ID": "12345",
+        "Phone": "905551112233",
+        "CreateDate": "2026-06-27",
+        "CreateTime": "10:00:00",
+        "Queue": "Gelen Arama",
+    }
+    variants = call_key_variants(sample)
+    assert "905551112233|27.06.2026|10:00:00|Gelen Arama" in variants
+    assert "12345|905551112233|27.06.2026|10:00:00|Gelen Arama" in variants
 
 
 def test_match_department_modes():

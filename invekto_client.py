@@ -339,17 +339,58 @@ def fetch_missed_calls(
 
 
 def call_key(call: dict[str, Any]) -> str:
+    """Dedup anahtarı: telefon + tarih + saat + kuyruk (saat HH:MM:SS normalize)."""
     call_date, call_time = _call_datetime(call)
-    call_id = call.get("ID") or call.get("CallID") or call.get("Phone") or ""
+    phone = str(call.get("Phone") or "").strip()
     return "|".join(
         [
-            str(call_id),
-            str(call.get("Phone", "")),
+            phone,
             call_date,
-            call_time,
+            _normalize_time_hms(call_time),
             _department_name(call),
         ]
     )
+
+
+def call_key_variants(call: dict[str, Any]) -> list[str]:
+    """Eski ve yeni kayıt formatlarıyla uyumlu dedup anahtarları."""
+    canonical = call_key(call)
+    phone = str(call.get("Phone") or "").strip()
+    call_date, call_time = _call_datetime(call)
+    time_norm = _normalize_time_hms(call_time)
+    dept = _department_name(call)
+
+    variants = [canonical]
+    legacy_id = str(call.get("ID") or call.get("CallID") or "").strip()
+    if legacy_id:
+        variants.append("|".join([legacy_id, phone, call_date, time_norm, dept]))
+        if legacy_id != phone:
+            variants.append("|".join([legacy_id, phone, call_date, time_norm, dept]))
+    variants.append("|".join(["", phone, call_date, time_norm, dept]))
+    # Eski format: id|phone|date|time|dept (id=phone veya boş)
+    if phone:
+        variants.append("|".join([phone, phone, call_date, time_norm, dept]))
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for key in variants:
+        if key and key not in seen:
+            seen.add(key)
+            ordered.append(key)
+    return ordered
+
+
+def dedupe_calls_by_key(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Aynı dedup anahtarına sahip kayıtları tekilleştirir."""
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for call in calls:
+        key = call_key(call)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(call)
+    return unique
 
 
 def format_call_message(call: dict[str, Any]) -> str:

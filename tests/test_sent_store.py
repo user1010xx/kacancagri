@@ -17,6 +17,14 @@ def test_legacy_list_migration(tmp_path: Path):
     assert old_key in data["completed"]
 
 
+def test_complete_any_and_mark_keys(tmp_path: Path):
+    store = SentStore(tmp_path / "sent_calls.json")
+    keys = ["k1", "k1-legacy"]
+    store.mark_complete_keys(keys)
+    assert store.is_complete_any(["k1-legacy", "missing"])
+    assert store.is_complete("k1")
+
+
 def test_group_notified_and_complete(tmp_path: Path):
     store = SentStore(tmp_path / "sent_calls.json")
     key = "k1"

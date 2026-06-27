@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from invekto_client import _call_datetime, _normalize_phone, call_key
+from invekto_client import _call_datetime, _normalize_phone, call_key, call_key_variants
 
 
 class NotifyKind(str, Enum):
@@ -35,12 +35,13 @@ def build_missed_call_context(
     sent_store,
 ) -> MissedCallContext | None:
     key = call_key(call)
-    if sent_store.is_complete(key):
+    key_variants = call_key_variants(call)
+    if sent_store.is_complete_any(key_variants):
         return None
 
     phone = str(call.get("Phone") or "")
     call_time_str = build_call_time_str(call)
-    retry_private_only = sent_store.is_group_notified(key)
+    retry_private_only = sent_store.is_group_notified_any(key_variants)
 
     dahili = dahili_cache.get(_normalize_phone(phone))
     if not dahili:
