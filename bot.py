@@ -27,6 +27,7 @@ from invekto_client import (
     build_phone_dahili_cache,
     call_key,
     fetch_missed_calls,
+    filter_calls_after_time,
     get_available_queues,
     parse_command_dates,
 )
@@ -479,6 +480,7 @@ async def _process_missed_calls_for_date(
     *,
     context: ContextTypes.DEFAULT_TYPE | None = None,
     throttle_seconds: float = 0.0,
+    after_time: str | None = None,
 ) -> tuple[int, int]:
     """Belirli bir günün kaçan çağrılarını işler. (bildirilen_sayı, başarısız_dm)"""
     company_code = _require_company_code()
@@ -514,6 +516,17 @@ async def _process_missed_calls_for_date(
         if context is not None:
             _update_bot_data(context, last_poll_error=str(exc))
         return 0, 0
+
+    if after_time:
+        before = len(calls)
+        calls = filter_calls_after_time(calls, after_time)
+        logger.info(
+            "%s backfill saat filtresi >=%s: %s -> %s çağrı",
+            target_date.isoformat(),
+            after_time,
+            before,
+            len(calls),
+        )
 
     dahili_cache = await asyncio.to_thread(build_phone_dahili_cache, company_code, 15)
 
@@ -570,7 +583,7 @@ async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _backfill_missed_calls(application: Application) -> None:
-    """Deploy sonrası kaçırılmış günleri bir kez işler (config.json'da işaretlenir)."""
+    """Deploy sonrası yalnızca BACKFILL_DATES ile belirtilen günleri işler."""
     if not _env_flag("BACKFILL_ON_STARTUP", default=True):
         return
 
@@ -578,37 +591,45 @@ async def _backfill_missed_calls(application: Application) -> None:
     if not company_code:
         return
 
-    targets: list[date] = []
-    if _env_flag("BACKFILL_YESTERDAY", default=True):
-        targets.append(date.today() - timedelta(days=1))
+    raw_dates = os.getenv("BACKFILL_DATES", "").strip()
+    if not raw_dates:
+        logger.info("BACKFILL_DATES boş; startup backfill atlandı.")
+        return
 
-    for raw in os.getenv("BACKFILL_DATES", "").split(","):
+    after_time = os.getenv("BACKFILL_AFTER_TIME", "14:57:00").strip() or None
+    throttle = float(os.getenv("BACKFILL_THROTTLE_SECONDS", "0.15"))
+    seen: set[str] = set()
+
+    for raw in raw_dates.split(","):
         part = raw.strip()
         if not part:
             continue
         try:
-            targets.append(dtm.strptime(part, "%d.%m.%Y").date())
+            target = dtm.strptime(part, "%d.%m.%Y").date()
         except ValueError:
             logger.warning("BACKFILL_DATES geçersiz tarih atlandı: %s", part)
-
-    seen: set[date] = set()
-    throttle = float(os.getenv("BACKFILL_THROTTLE_SECONDS", "0.15"))
-
-    for target in targets:
-        if target in seen or config.is_backfilled(target):
             continue
-        seen.add(target)
 
-        logger.info("%s için backfill başlıyor...", target.isoformat())
+        job_key = config.backfill_job_key(target, after_time)
+        if job_key in seen or config.is_backfilled(target, after_time):
+            continue
+        seen.add(job_key)
+
+        logger.info(
+            "%s için backfill başlıyor (saat >= %s)...",
+            target.isoformat(),
+            after_time or "00:00:00",
+        )
         sent_now, failed_dm = await _process_missed_calls_for_date(
             application.bot,
             target,
             throttle_seconds=throttle,
+            after_time=after_time,
         )
-        config.mark_backfilled(target)
+        config.mark_backfilled(target, after_time)
         logger.info(
             "Backfill tamamlandı: %s | bildirim=%s | başarısız_dm=%s",
-            target.isoformat(),
+            job_key,
             sent_now,
             failed_dm,
         )

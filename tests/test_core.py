@@ -9,6 +9,7 @@ from invekto_client import (
     call_key,
     format_call_message,
     filter_by_department,
+    filter_calls_after_time,
     parse_call_datetime,
     _is_missed_call,
     _is_uncompleted,
@@ -90,6 +91,16 @@ def test_filter_by_department_csv_string():
     ]
     filtered = filter_by_department(calls, "Gelen Arama,MESAI DIŞI")
     assert len(filtered) == 2
+
+
+def test_filter_calls_after_time_inclusive():
+    calls = [
+        {"CreateTime": "14:56:59", "Phone": "1"},
+        {"CreateTime": "14:57:00", "Phone": "2"},
+        {"CreateTime": "15:01:00", "Phone": "3"},
+    ]
+    filtered = filter_calls_after_time(calls, "14:57:00")
+    assert [c["Phone"] for c in filtered] == ["2", "3"]
 
 
 def test_call_key_without_id_uses_phone():

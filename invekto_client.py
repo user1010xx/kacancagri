@@ -190,6 +190,35 @@ def resolve_queue_number(
     return None
 
 
+def _normalize_time_hms(value: str) -> str:
+    text = str(value).strip()
+    if not text:
+        return "00:00:00"
+    for fmt in ("%H:%M:%S", "%H:%M"):
+        try:
+            return datetime.strptime(text, fmt).strftime("%H:%M:%S")
+        except ValueError:
+            continue
+    return text
+
+
+def filter_calls_after_time(
+    calls: list[dict[str, Any]],
+    after_time: str | None,
+) -> list[dict[str, Any]]:
+    """Yalnızca belirtilen saatten itibaren (dahil) olan çağrıları döndürür."""
+    if not after_time:
+        return calls
+
+    cutoff = _normalize_time_hms(after_time)
+    filtered: list[dict[str, Any]] = []
+    for call in calls:
+        _, call_time = _call_datetime(call)
+        if _normalize_time_hms(call_time or "") >= cutoff:
+            filtered.append(call)
+    return filtered
+
+
 def _parse_department_names(
     department_names: str | list[str] | None,
 ) -> list[str] | None:

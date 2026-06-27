@@ -74,14 +74,20 @@ class ConfigStore:
         self._runtime["company_code"] = value.strip()
         self._save_runtime()
 
-    def is_backfilled(self, target: date) -> bool:
-        key = target.isoformat()
+    @staticmethod
+    def backfill_job_key(target: date, after_time: str | None = None) -> str:
+        if after_time:
+            return f"{target.isoformat()}|{after_time}"
+        return target.isoformat()
+
+    def is_backfilled(self, target: date, after_time: str | None = None) -> bool:
+        key = self.backfill_job_key(target, after_time)
         stored = self._runtime.get("backfilled_dates", [])
         return isinstance(stored, list) and key in stored
 
-    def mark_backfilled(self, target: date) -> None:
+    def mark_backfilled(self, target: date, after_time: str | None = None) -> None:
         stored = list(self._runtime.get("backfilled_dates", []))
-        key = target.isoformat()
+        key = self.backfill_job_key(target, after_time)
         if key not in stored:
             stored.append(key)
             self._runtime["backfilled_dates"] = stored
