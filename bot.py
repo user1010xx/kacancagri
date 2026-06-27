@@ -27,9 +27,9 @@ from invekto_client import (
     build_phone_dahili_cache,
     call_key,
     fetch_missed_calls,
-    filter_calls_after_time,
     get_available_queues,
     parse_command_dates,
+    split_calls_by_time,
 )
 from notifications import (
     NotifyKind,
@@ -143,6 +143,56 @@ def _fetch_kwargs() -> dict:
 def _env_flag(name: str, *, default: bool = False) -> bool:
     raw = os.getenv(name, "true" if default else "false").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _cutoff_time_for_date(target_date: date) -> str | None:
+    """BACKFILL_DATES içindeki günler için saat filtresi (poll + backfill)."""
+    raw_dates = os.getenv("BACKFILL_DATES", "").strip()
+    if not raw_dates:
+        return None
+
+    after_time = os.getenv("BACKFILL_AFTER_TIME", "14:57:00").strip()
+    if not after_time:
+        return None
+
+    for raw in raw_dates.split(","):
+        part = raw.strip()
+        if not part:
+            continue
+        try:
+            if dtm.strptime(part, "%d.%m.%Y").date() == target_date:
+                return after_time
+        except ValueError:
+            continue
+    return None
+
+
+def _apply_time_cutoff(calls: list, target_date: date, cutoff: str) -> list:
+    """Cutoff öncesi çağrıları bildirmeden sent_store'a işler; sonrasını döndürür."""
+    before, after = split_calls_by_time(calls, cutoff)
+    skipped = 0
+    for call in before:
+        key = call_key(call)
+        if not sent_store.is_complete(key):
+            sent_store.mark_complete(key, save=False)
+            skipped += 1
+
+    if skipped:
+        sent_store.flush()
+        logger.info(
+            "%s saat filtresi <%s: %s çağrı bildirilmeden işlendi",
+            target_date.isoformat(),
+            cutoff,
+            skipped,
+        )
+
+    logger.info(
+        "%s saat filtresi >=%s: %s çağrı işlenecek",
+        target_date.isoformat(),
+        cutoff,
+        len(after),
+    )
+    return after
 
 
 def _allowed_chat_filter() -> filters.MessageFilter:
@@ -517,16 +567,9 @@ async def _process_missed_calls_for_date(
             _update_bot_data(context, last_poll_error=str(exc))
         return 0, 0
 
-    if after_time:
-        before = len(calls)
-        calls = filter_calls_after_time(calls, after_time)
-        logger.info(
-            "%s backfill saat filtresi >=%s: %s -> %s çağrı",
-            target_date.isoformat(),
-            after_time,
-            before,
-            len(calls),
-        )
+    cutoff = after_time or _cutoff_time_for_date(target_date)
+    if cutoff:
+        calls = _apply_time_cutoff(calls, target_date, cutoff)
 
     dahili_cache = await asyncio.to_thread(build_phone_dahili_cache, company_code, 15)
 

@@ -202,21 +202,37 @@ def _normalize_time_hms(value: str) -> str:
     return text
 
 
+def _call_time_hms(call: dict[str, Any]) -> str:
+    _, call_time = _call_datetime(call)
+    return _normalize_time_hms(call_time or "")
+
+
+def split_calls_by_time(
+    calls: list[dict[str, Any]],
+    after_time: str | None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Çağrıları cutoff saatine göre (öncesi, itibaren) ikiye ayırır."""
+    if not after_time:
+        return [], list(calls)
+
+    cutoff = _normalize_time_hms(after_time)
+    before: list[dict[str, Any]] = []
+    after: list[dict[str, Any]] = []
+    for call in calls:
+        if _call_time_hms(call) >= cutoff:
+            after.append(call)
+        else:
+            before.append(call)
+    return before, after
+
+
 def filter_calls_after_time(
     calls: list[dict[str, Any]],
     after_time: str | None,
 ) -> list[dict[str, Any]]:
     """Yalnızca belirtilen saatten itibaren (dahil) olan çağrıları döndürür."""
-    if not after_time:
-        return calls
-
-    cutoff = _normalize_time_hms(after_time)
-    filtered: list[dict[str, Any]] = []
-    for call in calls:
-        _, call_time = _call_datetime(call)
-        if _normalize_time_hms(call_time or "") >= cutoff:
-            filtered.append(call)
-    return filtered
+    _, after = split_calls_by_time(calls, after_time)
+    return after
 
 
 def _parse_department_names(
