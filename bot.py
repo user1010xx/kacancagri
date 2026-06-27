@@ -96,13 +96,6 @@ HELP_TEXT = (
     "Örnek: /kacancagri 15.06.2026, 25.06.2026"
 )
 
-PRIVATE_START_TEXT = (
-    "Merhaba! Kaçan çağrı bildirimlerini almak için bu botu kullanıyorsunuz.\n"
-    "Kayıtlı personel listesindeki @kullanıcı adınızla eşleşirseniz otomatik bağlanırsınız.\n"
-    "Eşleşme olmazsa yöneticinizden /personelekle ile eklenmenizi isteyin."
-)
-
-
 def _require_company_code() -> str | None:
     return config.company_code or None
 
@@ -166,11 +159,12 @@ async def private_start_command(update: Update, context: ContextTypes.DEFAULT_TY
     linked = personnel_store.link_chat_id_by_username(user.username, update.effective_chat.id)
     if linked:
         await update.message.reply_text(
-            f"✅ Bağlantı kuruldu ({linked} kayıt güncellendi).\n{PRIVATE_START_TEXT}"
+            "✅ Bağlantı kuruldu\n"
+            "Artık kaçan çağrılar sizlere iletilecektir."
         )
     else:
         await update.message.reply_text(
-            f"⚠️ @{user.username} için personel kaydı bulunamadı.\n{PRIVATE_START_TEXT}"
+            f"⚠️ @{user.username} için personel kaydı bulunamadı."
         )
 
 
