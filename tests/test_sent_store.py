@@ -41,3 +41,17 @@ def test_purge_old(tmp_path: Path):
     assert removed == 1
     assert store.is_complete(new_key)
     assert not store.is_complete(old_key)
+
+
+def test_equivalent_key_across_sources(tmp_path: Path):
+    store = SentStore(tmp_path / "sent_calls.json")
+    legacy_key = "57528|905301718596|27.06.2026|11:02:13|Gelen Arama"
+    conversation_key = "abc123|905301718596|27.06.2026|11:02:02|Gelen Arama"
+
+    store.mark_complete(legacy_key)
+    assert store.is_complete(conversation_key)
+    assert store.is_group_notified(conversation_key) is False
+
+    store2 = SentStore(tmp_path / "sent_calls2.json")
+    store2.mark_group_notified(legacy_key)
+    assert store2.is_group_notified(conversation_key)

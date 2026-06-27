@@ -24,6 +24,46 @@ class SentStore:
             pass
         return None
 
+    @staticmethod
+    def _parse_key_parts(key: str) -> tuple[str, str, str, str] | None:
+        parts = key.split("|")
+        if len(parts) < 5:
+            return None
+        return parts[1].strip(), parts[2].strip(), parts[3].strip(), parts[4].strip()
+
+    @staticmethod
+    def _time_to_seconds(time_str: str) -> int | None:
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed = datetime.strptime(time_str.strip(), fmt).time()
+                return parsed.hour * 3600 + parsed.minute * 60 + parsed.second
+            except ValueError:
+                continue
+        return None
+
+    def _equivalent_key(self, left: str, right: str, *, max_time_delta: int = 120) -> bool:
+        left_parts = self._parse_key_parts(left)
+        right_parts = self._parse_key_parts(right)
+        if not left_parts or not right_parts:
+            return False
+
+        left_phone, left_date, left_time, left_dept = left_parts
+        right_phone, right_date, right_time, right_dept = right_parts
+        if left_phone != right_phone or left_date != right_date or left_dept != right_dept:
+            return False
+
+        left_seconds = self._time_to_seconds(left_time)
+        right_seconds = self._time_to_seconds(right_time)
+        if left_seconds is None or right_seconds is None:
+            return left_time == right_time
+        return abs(left_seconds - right_seconds) <= max_time_delta
+
+    def _find_equivalent_in(self, key: str, keys: set[str]) -> str | None:
+        for existing in keys:
+            if self._equivalent_key(key, existing):
+                return existing
+        return None
+
     def _cleanup_old(self, keys: set[str]) -> set[str]:
         if self.max_age_days <= 0:
             return keys
@@ -83,10 +123,14 @@ class SentStore:
                 self._save()
 
     def is_complete(self, key: str) -> bool:
-        return key in self._completed
+        if key in self._completed:
+            return True
+        return self._find_equivalent_in(key, self._completed) is not None
 
     def is_group_notified(self, key: str) -> bool:
-        return key in self._group_notified
+        if key in self._group_notified:
+            return True
+        return self._find_equivalent_in(key, self._group_notified) is not None
 
     def has(self, key: str) -> bool:
         return self.is_complete(key)
@@ -111,8 +155,14 @@ class SentStore:
 
     def add_many(self, keys: list[str], *, save: bool = True) -> None:
         with self._lock:
-            self._completed.update(keys)
-            self._group_notified.difference_update(keys)
+            for key in keys:
+                if key in self._completed:
+                    continue
+                if self._find_equivalent_in(key, self._completed):
+                    continue
+                if self._find_equivalent_in(key, self._group_notified):
+                    continue
+                self._completed.add(key)
             self._dirty = True
             if save:
                 self._save()

@@ -4,7 +4,7 @@ Invekto PBX üzerinden günlük kaçan çağrıları (missed calls) tespit edip 
 
 ## Özellikler
 
-- Invekto PBX API ile entegrasyon (reportType 2/4)
+- Invekto PBX API ile entegrasyon (görüşmeler reportType 5; departman filtresi yoksa reportType 2)
 - Belirli departman/kuyruk filtreleme
 - Tekrar gönderimi önleyen kalıcı deduplication (45 güne kadar eski kayıtlar otomatik temizlenir)
 - `/kacancagri` ile tarih aralığı zengin Excel raporu
@@ -150,6 +150,7 @@ Bu uyarıların hiçbiri **çalışmayı etkilemez**. Güvenle kullanabilirsin.
 
 - Polling ile çalışır (JobQueue).
 - Her poll sadece **bugünün** verisini çeker.
+- Departman ayarlıyken kaçan çağrılar **Görüşmeler** raporundan (`Direction=MISSCALL`, `Queue` eşleşmesi) alınır; departman detay raporu kullanılmaz.
 - Dedup anahtarı: `ID|Phone|dd.mm.yyyy|saat|Departman`
 - Başlangıçta bugünün çağrıları seed edilir (restart'ta tekrar bildirim önlenir).
 - Görüşme geçmişi (15 gün) poll başına tek API çağrısıyla cache'lenir.

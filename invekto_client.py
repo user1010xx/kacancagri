@@ -250,6 +250,83 @@ def _fetch_from_miss_call_report(
     )
 
 
+def _is_conversation_missed_call(record: dict[str, Any]) -> bool:
+    return str(record.get("Direction", "")).strip().casefold() == "misscall"
+
+
+def _conversation_record_date(record: dict[str, Any]) -> date | None:
+    raw = str(
+        record.get("CreateDate")
+        or record.get("Date")
+        or record.get("ChekInDate")
+        or ""
+    ).strip()
+    if not raw:
+        return None
+    if "T" in raw:
+        raw = raw.split("T", 1)[0]
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(raw, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def _normalize_conversation_record(record: dict[str, Any]) -> dict[str, Any]:
+    """Görüşme kaydını mevcut bildirim/Excel akışının beklediği forma çevirir."""
+    normalized = dict(record)
+    normalized["ID"] = str(record.get("ID") or record.get("CallID") or "").strip()
+    normalized["Status"] = "2"
+    if not normalized.get("ChekInDate"):
+        normalized["ChekInDate"] = record.get("CreateDate") or record.get("Date")
+    if not normalized.get("ChekInTime"):
+        normalized["ChekInTime"] = record.get("CreateTime") or record.get("Time")
+    return normalized
+
+
+def _fetch_from_conversation_report(
+    company_code: str,
+    start_date: date,
+    end_date: date,
+    *,
+    department_name: str | None = None,
+    uncompleted_only: bool = False,
+    loose_department_match: bool = False,
+    timeout: int = 30,
+) -> list[dict[str, Any]]:
+    records = _request_report(
+        company_code,
+        start_date,
+        end_date,
+        REPORT_TYPE_CONVERSATION,
+        timeout=timeout,
+    )
+
+    missed_calls: list[dict[str, Any]] = []
+    for record in records:
+        if not _is_conversation_missed_call(record):
+            continue
+
+        record_date = _conversation_record_date(record)
+        if record_date is None or record_date < start_date or record_date > end_date:
+            continue
+
+        if department_name and not _match_department(
+            _department_name(record),
+            department_name,
+            loose=loose_department_match,
+        ):
+            continue
+
+        if uncompleted_only and not _is_uncompleted(record):
+            continue
+
+        missed_calls.append(_normalize_conversation_record(record))
+
+    return missed_calls
+
+
 def fetch_missed_calls(
     company_code: str,
     start_date: date,
@@ -261,23 +338,15 @@ def fetch_missed_calls(
     timeout: int = 30,
 ) -> list[dict[str, Any]]:
     if department_name:
-        queue_number = resolve_queue_number(
+        return _fetch_from_conversation_report(
             company_code,
             start_date,
             end_date,
-            department_name,
-            loose=loose_department_match,
+            department_name=department_name,
+            uncompleted_only=uncompleted_only,
+            loose_department_match=loose_department_match,
             timeout=timeout,
         )
-        if queue_number:
-            return _fetch_from_queue_detail(
-                company_code,
-                start_date,
-                end_date,
-                queue_number,
-                uncompleted_only=uncompleted_only,
-                timeout=timeout,
-            )
 
     calls = _fetch_from_miss_call_report(
         company_code,
