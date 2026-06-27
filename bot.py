@@ -802,7 +802,6 @@ def main() -> None:
         interval=config.polling_interval_seconds,
         first=5,
         name="missed-call-poller",
-        max_instances=1,
     )
     application.job_queue.run_daily(
         purge_old_sent_calls,
