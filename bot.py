@@ -122,20 +122,13 @@ def _require_company_code() -> str | None:
     return config.company_code or None
 
 
-def _parse_call_date(call_time_str: str) -> date | None:
-    try:
-        part = call_time_str.strip().split()[0]
-        return dtm.strptime(part, "%d.%m.%Y").date()
-    except Exception:
-        return None
-
-
 def _record_delivered_notification(notify_ctx) -> None:
     if notify_ctx.kind != NotifyKind.PERSONNEL:
         return
     personnel = notify_ctx.personnel or {}
     personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
-    call_date = _parse_call_date(notify_ctx.call_time_str) or _report_today()
+    # "İletilen çağrı" raporu, çağrının tarihi değil iletim zamanına göre gruplanır.
+    call_date = _report_today()
     delivered_store.add(
         call_key=notify_ctx.key,
         phone=notify_ctx.phone,
@@ -331,6 +324,10 @@ async def ayar_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     company_code = _require_company_code()
     bot_data = context.bot_data or {}
+    today = _report_today()
+    yesterday = today - timedelta(days=1)
+    delivered_today = len(delivered_store.get_by_call_date(today))
+    delivered_yesterday = len(delivered_store.get_by_call_date(yesterday))
 
     text = (
         "📊 Bot İstatistikleri\n\n"
@@ -338,6 +335,8 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"🏷️ Departman: {config.department_name or 'Tümü'}\n"
         f"📦 Tamamlanan (dedup) çağrı: {sent_store.count()}\n"
         f"⏳ DM bekleyen (grup gönderildi): {sent_store.group_notified_count()}\n"
+        f"📁 İletilen kayıt (bugün): {delivered_today}\n"
+        f"📁 İletilen kayıt (dün): {delivered_yesterday}\n"
         f"👥 Kayıtlı personel: {personnel_store.count()}\n"
         f"⏱️ Polling aralığı: {config.polling_interval_seconds} sn\n"
         f"📨 Bildirim filtresi: {'Sadece tamamlanmamış' if config.notify_uncompleted_only else 'Tümü'}\n"
