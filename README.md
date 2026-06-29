@@ -76,7 +76,7 @@ INVEKTO_DEPARTMENT_LOOSE_MATCH=false
 | `/stats` | Dedup kaydı sayısı, son poll bilgisi |
 | `/kuyruklar` | Invekto'daki kuyruk/departman adlarını listele |
 | `/kacancagri 15.06.2026, 25.06.2026` | Tarih aralığı için Excel raporu (tüm kaçan çağrılar) |
-| `/iletilenkacancagri 28.06.2026` | İletilen çağrı raporu (sadece bugün veya dün) |
+| `/iletilenkacancagri 28.06.2026` | İletilen çağrı raporu (geçmiş günler dahil) |
 | `/personelekle 105 Ahmet @ahmet` | Personel ekle/güncelle |
 | `/personelsil 105` | Personel sil |
 | `/personeller` | Kayıtlı personelleri listele |
@@ -85,7 +85,7 @@ INVEKTO_DEPARTMENT_LOOSE_MATCH=false
 
 **Özel mesaj (DM) için:** Personel, bota özel sohbetten `/start` yazmalıdır. Böylece `telegram_chat_id` kaydedilir ve kaçan çağrı bildirimi DM ile iletilir.
 
-**İletilen rapor kuralı:** `/iletilenkacancagri` komutu sadece bugün ve bir önceki gün için çalışır. Bugün tarihi seçilirse rapor, komut anına kadar iletilen kayıtları verir.
+**İletilen rapor kuralı:** `/iletilenkacancagri` komutu seçilen gün için çalışır (gelecek tarih hariç). Bugün tarihi seçilirse rapor, komut anına kadar iletilen kayıtları verir.
 
 **Not:** `NOTIFY_UNCOMPLETED_ONLY=true` iken anlık bildirimler sadece tamamlanmamış çağrıları kapsar; `/kacancagri` Excel raporu her zaman tüm kaçan çağrıları listeler.
 

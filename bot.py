@@ -93,6 +93,13 @@ try:
 except ValueError:
     DAILY_REPORT_HOUR = 10
 
+try:
+    DELIVERED_RETENTION_DAYS = max(1, int(os.getenv("DELIVERED_RETENTION_DAYS", "30")))
+except ValueError:
+    DELIVERED_RETENTION_DAYS = 30
+
+delivered_store.retention_hours = DELIVERED_RETENTION_DAYS * 24
+
 
 def _report_today() -> date:
     """Invekto rapor tarihi ile uyumlu 'bugün' (Railway UTC olsa bile TR takvimi)."""
@@ -109,7 +116,7 @@ HELP_TEXT = (
     "/temizle - Eski dedup kayıtlarını temizle\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
-    "/iletilenkacancagri <tarih> - Seçilen gün (sadece bugün/dün) için iletilen çağrıları Excel gönder\n"
+    "/iletilenkacancagri <tarih> - Seçilen gün için iletilen çağrıları Excel gönder\n"
     "/personelekle <dahili> <ad> <@kullanici> - Personel ekle/güncelle\n"
     "/personelsil <dahili> - Personeli sil\n"
     "/personeller - Kayıtlı personelleri listele\n"
@@ -127,17 +134,18 @@ def _record_delivered_notification(notify_ctx) -> None:
     personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
     # "İletilen çağrı" raporu, çağrının tarihi değil iletim zamanına göre gruplanır.
     call_date = _report_today()
+    notified_at_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
     delivered_store.add(
         call_key=notify_ctx.key,
         phone=notify_ctx.phone,
         personel_adi=personel_adi,
         call_date=call_date,
+        notified_at=notified_at_local,
     )
 
 
-def _purge_delivered_store_keep_today_and_yesterday() -> int:
-    today = _report_today()
-    min_day = today - timedelta(days=1)
+def _purge_delivered_store_by_retention_window() -> int:
+    min_day = _report_today() - timedelta(days=DELIVERED_RETENTION_DAYS - 1)
     return delivered_store.purge_older_than_call_date(min_day)
 
 
@@ -589,14 +597,13 @@ async def iletilenkacancagri_command(update: Update, context: ContextTypes.DEFAU
         return
 
     today = _report_today()
-    yesterday = today - timedelta(days=1)
-    if target_date not in {today, yesterday}:
+    if target_date > today:
         await update.message.reply_text(
-            "Bu rapor sadece bugün ve bir önceki gün için alınabilir."
+            "Gelecek tarih için rapor alınamaz."
         )
         return
 
-    _purge_delivered_store_keep_today_and_yesterday()
+    _purge_delivered_store_by_retention_window()
 
     rows = delivered_store.get_by_call_date(target_date)
     now_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
@@ -744,7 +751,7 @@ async def _process_missed_calls_for_date(
 
 
 async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
-    _purge_delivered_store_keep_today_and_yesterday()
+    _purge_delivered_store_by_retention_window()
 
     sent_now, failed_dm = await _process_missed_calls_for_date(
         context.bot,
@@ -826,7 +833,7 @@ async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> Non
     if not config.target_chat_id:
         return
 
-    _purge_delivered_store_keep_today_and_yesterday()
+    _purge_delivered_store_by_retention_window()
     target_date = _report_today()
     now_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
     report_label = target_date.strftime("%d.%m.%Y")
