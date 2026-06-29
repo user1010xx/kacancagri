@@ -28,6 +28,8 @@ from invekto_client import (
     call_key,
     call_key_variants,
     dedupe_calls_by_key,
+    enrich_delivered_rows_with_callback_status,
+    fetch_conversations,
     fetch_missed_calls,
     get_available_queues,
     parse_command_dates,
@@ -107,6 +109,7 @@ HELP_TEXT = (
     "/temizle - Eski dedup kayıtlarını temizle\n"
     "/kuyruklar - Invekto'daki departman/kuyruk adlarını listele\n"
     "/kacancagri <başlangıç>, <bitiş> - Tarih aralığındaki kaçan çağrıları Excel olarak gönder\n"
+    "/iletilenkacancagri <tarih> - Seçilen gün (sadece bugün/dün) için iletilen çağrıları Excel gönder\n"
     "/personelekle <dahili> <ad> <@kullanici> - Personel ekle/güncelle\n"
     "/personelsil <dahili> - Personeli sil\n"
     "/personeller - Kayıtlı personelleri listele\n"
@@ -138,6 +141,54 @@ def _record_delivered_notification(notify_ctx) -> None:
         phone=notify_ctx.phone,
         personel_adi=personel_adi,
         call_date=call_date,
+    )
+
+
+def _purge_delivered_store_keep_today_and_yesterday() -> int:
+    today = _report_today()
+    min_day = today - timedelta(days=1)
+    return delivered_store.purge_older_than_call_date(min_day)
+
+
+def _parse_delivered_report_date(value: str) -> date:
+    return dtm.strptime(value.strip(), "%d.%m.%Y").date()
+
+
+def _rows_until_now(rows: list[dict], *, now: dtm | None = None) -> list[dict]:
+    """Yalnızca belirtilen ana kadar iletilmiş kayıtları döndürür."""
+    now_value = now or dtm.now(REPORT_TZ).replace(tzinfo=None)
+    out: list[dict] = []
+    for row in rows:
+        notified_text = str(row.get("notified_at") or "").strip()
+        if not notified_text:
+            continue
+        try:
+            notified_at = dtm.strptime(notified_text, "%d.%m.%Y %H:%M:%S")
+        except ValueError:
+            continue
+        if notified_at <= now_value:
+            out.append(row)
+    return out
+
+
+async def _build_delivered_report_rows(target_date: date, rows: list[dict]) -> list[dict]:
+    company_code = _require_company_code()
+    if not company_code:
+        return [
+            {**r, "callback_status": "Kontrol Edilemedi (Firma Kodu Yok)"}
+            for r in rows
+        ]
+
+    conversations = await asyncio.to_thread(
+        fetch_conversations,
+        company_code,
+        target_date,
+        target_date,
+    )
+    return enrich_delivered_rows_with_callback_status(
+        rows,
+        conversations,
+        personnel_store.get_all(),
     )
 
 
@@ -528,6 +579,82 @@ async def kacancagri_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             export_path.unlink()
 
 
+async def iletilenkacancagri_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text("Kullanım: /iletilenkacancagri 28.06.2026")
+        return
+
+    raw_date = context.args[0].strip()
+    try:
+        target_date = _parse_delivered_report_date(raw_date)
+    except ValueError:
+        await update.message.reply_text("Geçersiz tarih. Format: /iletilenkacancagri 28.06.2026")
+        return
+
+    today = _report_today()
+    yesterday = today - timedelta(days=1)
+    if target_date not in {today, yesterday}:
+        await update.message.reply_text(
+            "Bu rapor sadece bugün ve bir önceki gün için alınabilir."
+        )
+        return
+
+    _purge_delivered_store_keep_today_and_yesterday()
+
+    rows = delivered_store.get_by_call_date(target_date)
+    now_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
+    if target_date == today:
+        rows = _rows_until_now(rows, now=now_local)
+
+    if not rows:
+        if target_date == today:
+            await update.message.reply_text(
+                f"📊 {today.strftime('%d.%m.%Y')} {now_local.strftime('%H:%M')} itibarıyla "
+                "personele iletilen kaçan çağrı bulunamadı."
+            )
+        else:
+            await update.message.reply_text(
+                f"📊 {target_date.strftime('%d.%m.%Y')} tarihinde personele iletilen kaçan çağrı bulunamadı."
+            )
+        return
+
+    await update.message.reply_text("İletilen çağrı raporu hazırlanıyor, lütfen bekleyin...")
+
+    filename = f"iletilen_kacancagri_{target_date.strftime('%d-%m-%Y')}.xlsx"
+    export_path = DATA_DIR / "exports" / filename
+
+    try:
+        report_rows = await _build_delivered_report_rows(target_date, rows)
+        await asyncio.to_thread(export_delivered_report_excel, report_rows, export_path)
+
+        if target_date == today:
+            caption = (
+                "📊 Personele İletilen Kaçan Çağrılar\n"
+                f"Tarih: {today.strftime('%d.%m.%Y')}\n"
+                f"Saat: {now_local.strftime('%H:%M')} itibarıyla\n"
+                f"Toplam: {len(rows)}"
+            )
+        else:
+            caption = (
+                "📊 Personele İletilen Kaçan Çağrılar\n"
+                f"Tarih: {target_date.strftime('%d.%m.%Y')}\n"
+                f"Toplam: {len(rows)}"
+            )
+
+        with export_path.open("rb") as excel_file:
+            await update.message.reply_document(
+                document=excel_file,
+                filename=filename,
+                caption=caption,
+            )
+    except Exception as exc:
+        logger.exception("/iletilenkacancagri raporu oluşturulamadı")
+        await update.message.reply_text(f"Rapor oluşturulamadı: {exc}")
+    finally:
+        if export_path.exists():
+            export_path.unlink(missing_ok=True)
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.exception("Beklenmeyen hata: %s", context.error)
 
@@ -621,6 +748,8 @@ async def _process_missed_calls_for_date(
 
 
 async def poll_missed_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
+    _purge_delivered_store_keep_today_and_yesterday()
+
     sent_now, failed_dm = await _process_missed_calls_for_date(
         context.bot,
         _report_today(),
@@ -697,31 +826,37 @@ async def purge_old_sent_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Önceki gün personele başarıyla iletilen kaçan çağrıları Excel olarak gruba gönderir."""
+    """Bugün o ana kadar personele iletilen kaçan çağrıları Excel olarak gruba gönderir."""
     if not config.target_chat_id:
         return
 
-    delivered_store.purge_expired()
-    yesterday = _report_today() - timedelta(days=1)
-    report_label = yesterday.strftime("%d.%m.%Y")
-    rows = delivered_store.get_by_call_date(yesterday)
+    _purge_delivered_store_keep_today_and_yesterday()
+    target_date = _report_today()
+    now_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
+    report_label = target_date.strftime("%d.%m.%Y")
+    rows = _rows_until_now(delivered_store.get_by_call_date(target_date), now=now_local)
 
     if not rows:
         await context.bot.send_message(
             chat_id=config.target_chat_id,
-            text=f"📊 {report_label} tarihinde personele iletilen kaçan çağrı bulunamadı.",
+            text=(
+                f"📊 {report_label} {now_local.strftime('%H:%M')} itibarıyla "
+                "personele iletilen kaçan çağrı bulunamadı."
+            ),
         )
-        delivered_store.purge_call_date(yesterday)
         return
 
-    filename = f"iletilen_kacancagri_{yesterday.strftime('%d-%m-%Y')}.xlsx"
+    filename = f"iletilen_kacancagri_{target_date.strftime('%d-%m-%Y')}.xlsx"
     export_path = DATA_DIR / "exports" / filename
 
     try:
-        await asyncio.to_thread(export_delivered_report_excel, rows, export_path)
+        report_rows = await _build_delivered_report_rows(target_date, rows)
+
+        await asyncio.to_thread(export_delivered_report_excel, report_rows, export_path)
         caption = (
             f"📊 Personele İletilen Kaçan Çağrılar\n"
             f"Tarih: {report_label}\n"
+            f"Saat: {now_local.strftime('%H:%M')} itibarıyla\n"
             f"Toplam: {len(rows)}"
         )
         with export_path.open("rb") as excel_file:
@@ -731,12 +866,10 @@ async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> Non
                 filename=filename,
                 caption=caption,
             )
-        removed = delivered_store.purge_call_date(yesterday)
         logger.info(
-            "Günlük iletilen rapor gönderildi: %s (%s kayıt, %s silindi).",
+            "Günlük iletilen rapor gönderildi: %s (%s kayıt).",
             report_label,
             len(rows),
-            removed,
         )
     except Exception as exc:
         logger.exception("Günlük iletilen raporu gönderilemedi")
@@ -795,6 +928,7 @@ def main() -> None:
     application.add_handler(CommandHandler("firmakodu", firmakodu_command, filters=allowed))
     application.add_handler(CommandHandler("kuyruklar", kuyruklar_command, filters=allowed))
     application.add_handler(CommandHandler("kacancagri", kacancagri_command, filters=allowed))
+    application.add_handler(CommandHandler("iletilenkacancagri", iletilenkacancagri_command, filters=allowed))
     application.add_handler(CommandHandler("personelekle", personelekle_command, filters=allowed))
     application.add_handler(CommandHandler("personelsil", personelsil_command, filters=allowed))
     application.add_handler(CommandHandler("personeller", personeller_command, filters=allowed))

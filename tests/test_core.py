@@ -5,6 +5,8 @@ from unittest.mock import patch
 from invekto_client import (
     REPORT_TYPE_MISS_CALL,
     fetch_missed_calls,
+    fetch_conversations,
+    enrich_delivered_rows_with_callback_status,
     parse_command_dates,
     call_key,
     format_call_message,
@@ -203,3 +205,81 @@ def test_fetch_missed_calls_uses_miss_call_report_only():
     assert mock_request.call_args[0][3] == REPORT_TYPE_MISS_CALL
     assert len(calls) == 1
     assert calls[0]["Phone"] == "905551112233"
+
+
+def test_fetch_conversations_uses_report_type_5():
+    today = date(2026, 6, 28)
+    api_rows = [{"Phone": "905551112233", "EventType": "1"}]
+    with patch("invekto_client._request_report", return_value=api_rows) as mock_request:
+        rows = fetch_conversations("12345678", today, today)
+    assert rows == api_rows
+    mock_request.assert_called_once()
+    assert mock_request.call_args[0][3] == 5
+
+
+def test_enrich_delivered_rows_with_callback_status_after_notification_and_name_match():
+    rows = [
+        {
+            "phone": "905012600688",
+            "personel_adi": "elcin",
+            "notified_at": "28.06.2026 07:58:34",
+        }
+    ]
+    conversations = [
+        {
+            "EventType": "1",
+            "Phone": "905012600688",
+            "Date": "2026-06-28",
+            "Time": "07:40:00",
+            "Extension": "105",
+            "ExtensionName": "Elcin-k",
+        },
+        {
+            "EventType": "1",
+            "Phone": "905012600688",
+            "Date": "2026-06-28",
+            "Time": "08:10:12",
+            "Extension": "105",
+            "ExtensionName": "elci",
+        },
+    ]
+    personnel_rows = [
+        {
+            "dahili_ad": "105",
+            "personel_adi": "Elcin",
+            "telegram_username": "elcin",
+        }
+    ]
+
+    out = enrich_delivered_rows_with_callback_status(rows, conversations, personnel_rows)
+    assert out[0]["callback_status"] == "Aradı - 08:10:12"
+
+
+def test_enrich_delivered_rows_with_callback_status_ignores_other_person():
+    rows = [
+        {
+            "phone": "905012600688",
+            "personel_adi": "elcin",
+            "notified_at": "28.06.2026 07:58:34",
+        }
+    ]
+    conversations = [
+        {
+            "EventType": "1",
+            "Phone": "905012600688",
+            "Date": "2026-06-28",
+            "Time": "08:10:12",
+            "Extension": "106",
+            "ExtensionName": "asya",
+        }
+    ]
+    personnel_rows = [
+        {
+            "dahili_ad": "105",
+            "personel_adi": "Elcin",
+            "telegram_username": "elcin",
+        }
+    ]
+
+    out = enrich_delivered_rows_with_callback_status(rows, conversations, personnel_rows)
+    assert out[0]["callback_status"] == "Aramadı"

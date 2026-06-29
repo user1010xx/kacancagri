@@ -469,6 +469,62 @@ def _normalize_phone(phone: str) -> str:
     return digits[-10:] if len(digits) >= 10 else digits
 
 
+_TR_MAP = str.maketrans(
+    {
+        "ç": "c",
+        "ğ": "g",
+        "ı": "i",
+        "ö": "o",
+        "ş": "s",
+        "ü": "u",
+        "Ç": "c",
+        "Ğ": "g",
+        "İ": "i",
+        "I": "i",
+        "Ö": "o",
+        "Ş": "s",
+        "Ü": "u",
+    }
+)
+
+
+def _normalize_person_text(value: Any) -> str:
+    text = str(value or "").strip().translate(_TR_MAP).casefold()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _person_tokens(value: Any) -> list[str]:
+    normalized = _normalize_person_text(value)
+    if not normalized:
+        return []
+    tokens = [t for t in normalized.split(" ") if t]
+    if not tokens:
+        return []
+    return tokens
+
+
+def _person_name_matches(left: Any, right: Any) -> bool:
+    left_tokens = _person_tokens(left)
+    right_tokens = _person_tokens(right)
+    if not left_tokens or not right_tokens:
+        return False
+
+    left_join = " ".join(left_tokens)
+    right_join = " ".join(right_tokens)
+    if left_join == right_join:
+        return True
+
+    for a in left_tokens:
+        for b in right_tokens:
+            if a == b:
+                return True
+            # "elcin-k" / "elci" gibi kısmi eşleşmeler için kontrollü prefix
+            if len(a) >= 4 and len(b) >= 4 and (a.startswith(b) or b.startswith(a)):
+                return True
+    return False
+
+
 def _parse_conversation_datetime(date_value: Any, time_value: Any) -> datetime:
     text = f"{date_value} {time_value}".strip()
     for fmt in (
@@ -482,6 +538,116 @@ def _parse_conversation_datetime(date_value: Any, time_value: Any) -> datetime:
         except ValueError:
             continue
     return datetime.min
+
+
+def fetch_conversations(
+    company_code: str,
+    start_date: date,
+    end_date: date,
+    *,
+    timeout: int = 30,
+) -> list[dict[str, Any]]:
+    return _request_report(
+        company_code,
+        start_date,
+        end_date,
+        REPORT_TYPE_CONVERSATION,
+        timeout=timeout,
+    )
+
+
+def enrich_delivered_rows_with_callback_status(
+    rows: list[dict[str, Any]],
+    conversations: list[dict[str, Any]],
+    personnel_rows: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """İletilen çağrı satırlarına geri arama durumunu ekler.
+
+    Kurallar:
+    - Aynı gün, aynı telefon
+    - Sadece EventType=1 (dış arama)
+    - İletilen saatten SONRA yapılan aramalar
+    - Eşleşme önceliği: dahili (varsa) > isim eşleşmesi
+    """
+    personnel_rows = personnel_rows or []
+
+    prepared: list[dict[str, Any]] = []
+    for rec in conversations:
+        when = _parse_conversation_datetime(
+            rec.get("Date") or rec.get("ChekInDate") or rec.get("CreateDate") or "",
+            rec.get("Time") or rec.get("ChekInTime") or rec.get("CreateTime") or "",
+        )
+        if when == datetime.min:
+            continue
+
+        event_type = str(rec.get("EventType") or "").strip()
+        if event_type and event_type != "1":
+            continue
+
+        prepared.append(
+            {
+                "phone": _normalize_phone(rec.get("Phone") or rec.get("phone") or ""),
+                "when": when,
+                "extension": str(rec.get("Extension") or "").strip(),
+                "extension_name": str(rec.get("ExtensionName") or "").strip(),
+            }
+        )
+
+    prepared.sort(key=lambda x: x["when"])
+
+    def _candidate_extensions(target_person: str) -> set[str]:
+        candidates: set[str] = set()
+        for p in personnel_rows:
+            pname = p.get("personel_adi") or ""
+            if _person_name_matches(pname, target_person):
+                dahili = str(p.get("dahili_ad") or "").strip()
+                if dahili:
+                    candidates.add(dahili)
+        return candidates
+
+    enriched: list[dict[str, Any]] = []
+    for row in rows:
+        row_copy = dict(row)
+        target_phone = _normalize_phone(row.get("phone") or "")
+        target_person = str(row.get("personel_adi") or "").strip()
+
+        notified_text = str(row.get("notified_at") or "").strip()
+        notified_at: datetime | None = None
+        try:
+            if notified_text:
+                notified_at = datetime.strptime(notified_text, "%d.%m.%Y %H:%M:%S")
+        except ValueError:
+            notified_at = None
+
+        extensions = _candidate_extensions(target_person)
+        first_match: datetime | None = None
+
+        for rec in prepared:
+            if target_phone and rec["phone"] and rec["phone"] != target_phone:
+                continue
+
+            when = rec["when"]
+            if notified_at and when < notified_at:
+                continue
+
+            ext = str(rec["extension"] or "").strip()
+            ext_name = str(rec["extension_name"] or "").strip()
+
+            by_extension = bool(ext and extensions and ext in extensions)
+            by_name = _person_name_matches(ext_name, target_person)
+
+            if by_extension or by_name:
+                first_match = when
+                break
+
+        if first_match:
+            row_copy["callback_status"] = f"Aradı - {first_match.strftime('%H:%M:%S')}"
+        else:
+            row_copy["callback_status"] = "Aramadı"
+
+        enriched.append(row_copy)
+
+    return enriched
 
 
 def _extract_dahili_from_record(rec: dict[str, Any]) -> str:

@@ -113,7 +113,7 @@ def export_delivered_report_excel(
     rows: list[dict],
     output_path: Path,
 ) -> Path:
-    """Personele başarıyla iletilen kaçan çağrılar: Numara, Personel Adı, İletilen Saat."""
+    """Personele başarıyla iletilen kaçan çağrılar: Numara, Personel Adı, İletilen Saat, Geri Arama Durumu."""
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "İletilen Çağrılar"
@@ -128,7 +128,7 @@ def export_delivered_report_excel(
     )
     center_align = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Numara", "Personel Adı", "İletilen Saat"]
+    headers = ["Numara", "Personel Adı", "İletilen Saat", "Geri Arama Durumu"]
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(row=1, column=col, value=header)
         cell.font = header_font_white
@@ -141,6 +141,7 @@ def export_delivered_report_excel(
             row.get("phone", ""),
             row.get("personel_adi", ""),
             row.get("notified_at", ""),
+            row.get("callback_status", ""),
         ]
         for col, value in enumerate(values, start=1):
             cell = sheet.cell(row=row_idx, column=col, value=value)
@@ -148,7 +149,7 @@ def export_delivered_report_excel(
             if col == 3:
                 cell.alignment = center_align
 
-    widths = [18, 24, 22]
+    widths = [18, 24, 22, 26]
     for i, w in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(i)].width = w
 

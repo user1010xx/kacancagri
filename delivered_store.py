@@ -34,6 +34,13 @@ class DeliveredStore:
             json.dump(self._entries, f, ensure_ascii=False, indent=2)
         os.replace(temp, self.path)
 
+    @staticmethod
+    def _parse_entry_call_date(value: Any) -> date | None:
+        try:
+            return datetime.strptime(str(value), "%Y-%m-%d").date()
+        except Exception:
+            return None
+
     def _purge_expired(self) -> None:
         if self.retention_hours <= 0:
             return
@@ -92,6 +99,20 @@ class DeliveredStore:
         with self._lock:
             before = len(self._entries)
             self._purge_expired()
+            return before - len(self._entries)
+
+    def purge_older_than_call_date(self, min_call_date: date) -> int:
+        """Belirtilen tarihten eski çağrı günlerini temizler (min_call_date dahil kalır)."""
+        with self._lock:
+            before = len(self._entries)
+            kept: list[dict[str, str]] = []
+            for entry in self._entries:
+                entry_call_date = self._parse_entry_call_date(entry.get("call_date"))
+                if entry_call_date is None or entry_call_date >= min_call_date:
+                    kept.append(entry)
+            self._entries = kept
+            if len(self._entries) != before:
+                self._save()
             return before - len(self._entries)
 
     def count(self) -> int:
