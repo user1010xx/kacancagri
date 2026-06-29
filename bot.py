@@ -123,8 +123,6 @@ def _require_company_code() -> str | None:
 
 
 def _record_delivered_notification(notify_ctx) -> None:
-    if notify_ctx.kind != NotifyKind.PERSONNEL:
-        return
     personnel = notify_ctx.personnel or {}
     personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
     # "İletilen çağrı" raporu, çağrının tarihi değil iletim zamanına göre gruplanır.
@@ -733,12 +731,11 @@ async def _process_missed_calls_for_date(
 
             if group_ok and not notify_ctx.retry_private_only:
                 sent_store.mark_group_notified_keys(key_variants, save=True)
+                _record_delivered_notification(notify_ctx)
 
             if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
                 sent_store.mark_complete_keys(key_variants, save=True)
                 sent_now += 1
-                if notify_ctx.kind == NotifyKind.PERSONNEL and private_ok:
-                    _record_delivered_notification(notify_ctx)
 
             if throttle_seconds > 0:
                 await asyncio.sleep(throttle_seconds)
