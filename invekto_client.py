@@ -603,12 +603,19 @@ def enrich_delivered_rows_with_callback_status(
             or rec.get("CompletedExtension")
             or rec.get("extension")
             or rec.get("ExtensionName")
+            or rec.get("dahili")
             or ""
         )
         ext_name_val = (
             rec.get("ExtensionName")
             or rec.get("CompletedExtensionName")
             or rec.get("extensionName")
+            or rec.get("Name")
+            or rec.get("Agent")
+            or rec.get("User")
+            or rec.get("Person")
+            or rec.get("DisplayName")
+            or rec.get("ExtensionDisplayName")
             or ""
         )
 
@@ -618,6 +625,7 @@ def enrich_delivered_rows_with_callback_status(
                 "when": when,
                 "extension": str(ext_val).strip(),
                 "extension_name": str(ext_name_val).strip(),
+                "original": rec,  # for robust name matching on any field
             }
         )
 
@@ -665,13 +673,25 @@ def enrich_delivered_rows_with_callback_status(
 
             by_extension = bool(ext and extensions and ext in extensions)
             by_name = _person_name_matches(ext_name, target_person)
-            # Bazı kayıtlarda isim "Extension" alanında da çıkabiliyor
             by_name_on_ext = _person_name_matches(ext, target_person)
             personnel_match = by_extension or by_name or by_name_on_ext
+
+            # Robust: check any string field in original rec for name match (in case name is in unexpected field)
+            if not personnel_match and "original" in rec:
+                orig = rec["original"]
+                for k, v in orig.items():
+                    if isinstance(v, (str, int)) and str(v).strip():
+                        if _person_name_matches(str(v), target_person):
+                            personnel_match = True
+                            break
 
             # Telefon kontrolü: ya tam eşleşme ya da conv kaydında phone yoksa
             rec_phone = rec.get("phone") or ""
             phone_match = (not target_phone) or (not rec_phone) or (rec_phone == target_phone)
+            # Extra robustness: if phones normalize to same last 9 digits (in case of prefix difference)
+            if not phone_match and target_phone and rec_phone:
+                if target_phone[-9:] == rec_phone[-9:]:
+                    phone_match = True
 
             if personnel_match and phone_match:
                 first_match = when
