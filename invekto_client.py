@@ -490,6 +490,9 @@ _TR_MAP = str.maketrans(
 
 def _normalize_person_text(value: Any) -> str:
     text = str(value or "").strip().translate(_TR_MAP).casefold()
+    # Invekto'da extension isimleri "selcuk -O", "selen-K" gibi gelebiliyor.
+    # Soneki temizle ki "selcuk" ile "selcuk -O" eşleşsin.
+    text = re.sub(r"\s*[-_]\s*[a-z]?\s*$", "", text).strip()
     text = re.sub(r"[^a-z0-9]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
