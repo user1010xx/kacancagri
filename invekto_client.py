@@ -526,14 +526,23 @@ def _person_name_matches(left: Any, right: Any) -> bool:
 
 
 def _parse_conversation_datetime(date_value: Any, time_value: Any) -> datetime:
-    text = f"{date_value} {time_value}".strip()
+    # Normalize separators: Invekto sometimes uses / instead of .
+    date_str = str(date_value or "").strip().replace("/", ".").replace("-", ".")
+    time_str = str(time_value or "").strip()
+    text = f"{date_str} {time_str}".strip()
+
     for fmt in (
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M",
+        "%Y.%m.%d %H:%M:%S",
+        "%Y.%m.%d %H:%M",
         "%d.%m.%Y %H:%M:%S",
         "%d.%m.%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",  # fallback for old formats
+        "%Y-%m-%d %H:%M",
+        "%d/%m/%Y %H:%M:%S",
+        "%d/%m/%Y %H:%M",
     ):
         try:
+            # Take up to 19 chars to handle possible extra millis etc.
             return datetime.strptime(text[:19], fmt)
         except ValueError:
             continue
@@ -583,24 +592,17 @@ def enrich_delivered_rows_with_callback_status(
         if when == datetime.min:
             continue
 
-        event_type = str(rec.get("EventType") or "").strip()
-        direction = str(rec.get("Direction") or "").upper().strip()
+        # Daha esnek: Artık EventType/ Direction filtresi yapmıyoruz.
+        # Çünkü bazı outgoing callback kayıtlarında EventType farklı olabiliyor.
+        # Seçimi tamamen telefon + personel (extension / extension_name) + zaman > iletilen ile yapıyoruz.
+        # Bu, Invekto'da görülen tüm ilgili kayıtları yakalamayı sağlar.
 
-        # Daha esnek filtre: EventType=1 veya boş, ya da Direction OUT ise dahil et
-        is_potential_outgoing = (
-            (not event_type or event_type == "1")
-            or direction in {"OUT", "OUTGOING", "DIAL"}
-        )
-        if not is_potential_outgoing:
-            continue
-
-        # Daha fazla alan dene (bazı kayıtlarda farklı field'lar dolu olabilir)
         phone_val = rec.get("Phone") or rec.get("phone") or rec.get("CalledNumber") or ""
         ext_val = (
             rec.get("Extension")
             or rec.get("CompletedExtension")
             or rec.get("extension")
-            or rec.get("ExtensionName")  # bazen buraya yazılıyor
+            or rec.get("ExtensionName")
             or ""
         )
         ext_name_val = (
@@ -663,7 +665,9 @@ def enrich_delivered_rows_with_callback_status(
 
             by_extension = bool(ext and extensions and ext in extensions)
             by_name = _person_name_matches(ext_name, target_person)
-            personnel_match = by_extension or by_name
+            # Bazı kayıtlarda isim "Extension" alanında da çıkabiliyor
+            by_name_on_ext = _person_name_matches(ext, target_person)
+            personnel_match = by_extension or by_name or by_name_on_ext
 
             # Telefon kontrolü: ya tam eşleşme ya da conv kaydında phone yoksa
             rec_phone = rec.get("phone") or ""
