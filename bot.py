@@ -178,11 +178,15 @@ async def _build_delivered_report_rows(target_date: date, rows: list[dict]) -> l
             for r in rows
         ]
 
+    # Callback'ler (personelin araması) iletilen gün + ertesi gün yapılabilir.
+    # Missed call gecikmeleri de hesaba katılarak target-1 .. target+1 aralığı çekiyoruz.
+    conv_start = target_date - timedelta(days=1)
+    conv_end = target_date + timedelta(days=1)
     conversations = await asyncio.to_thread(
         fetch_conversations,
         company_code,
-        target_date,
-        target_date,
+        conv_start,
+        conv_end,
     )
     return enrich_delivered_rows_with_callback_status(
         rows,
@@ -738,7 +742,10 @@ async def _process_missed_calls_for_date(
 
             if group_ok and not notify_ctx.retry_private_only:
                 sent_store.mark_group_notified_keys(key_variants, save=True)
-                _record_delivered_notification(notify_ctx)
+                # Sadece gerçek personel eşleşmesi olan iletimleri "personele iletilen" kaydına al.
+                # Böylece Excel raporunda personel adı boş veya "bilinmiyor" satırlar olmaz.
+                if notify_ctx.kind == NotifyKind.PERSONNEL:
+                    _record_delivered_notification(notify_ctx)
 
             if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
                 sent_store.mark_complete_keys(key_variants, save=True)
@@ -829,22 +836,20 @@ async def purge_old_sent_calls(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Bugün o ana kadar personele iletilen kaçan çağrıları Excel olarak gruba gönderir."""
+    """Her sabah 10:00'da bir önceki gün personele iletilen kaçan çağrıları Excel olarak gönderir."""
     if not config.target_chat_id:
         return
 
     _purge_delivered_store_by_retention_window()
-    target_date = _report_today()
-    now_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
-    report_label = target_date.strftime("%d.%m.%Y")
-    rows = _rows_until_now(delivered_store.get_by_call_date(target_date), now=now_local)
+    today = _report_today()
+    target_date = today - timedelta(days=1)
+    rows = delivered_store.get_by_call_date(target_date)
 
     if not rows:
         await context.bot.send_message(
             chat_id=config.target_chat_id,
             text=(
-                f"📊 {report_label} {now_local.strftime('%H:%M')} itibarıyla "
-                "personele iletilen kaçan çağrı bulunamadı."
+                f"📊 {target_date.strftime('%d.%m.%Y')} tarihinde personele iletilen kaçan çağrı bulunamadı."
             ),
         )
         return
@@ -857,9 +862,8 @@ async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await asyncio.to_thread(export_delivered_report_excel, report_rows, export_path)
         caption = (
-            f"📊 Personele İletilen Kaçan Çağrılar\n"
-            f"Tarih: {report_label}\n"
-            f"Saat: {now_local.strftime('%H:%M')} itibarıyla\n"
+            f"📊 Personele İletilen Kaçan Çağrılar (Önceki Gün)\n"
+            f"Tarih: {target_date.strftime('%d.%m.%Y')}\n"
             f"Toplam: {len(rows)}"
         )
         with export_path.open("rb") as excel_file:
@@ -871,7 +875,7 @@ async def send_daily_delivered_report(context: ContextTypes.DEFAULT_TYPE) -> Non
             )
         logger.info(
             "Günlük iletilen rapor gönderildi: %s (%s kayıt).",
-            report_label,
+            target_date.isoformat(),
             len(rows),
         )
     except Exception as exc:

@@ -252,7 +252,7 @@ def test_enrich_delivered_rows_with_callback_status_after_notification_and_name_
     ]
 
     out = enrich_delivered_rows_with_callback_status(rows, conversations, personnel_rows)
-    assert out[0]["callback_status"] == "Aradı - 08:10:12"
+    assert out[0]["callback_status"] == "Aradı - 28.06.2026 08:10:12"
 
 
 def test_enrich_delivered_rows_with_callback_status_ignores_other_person():

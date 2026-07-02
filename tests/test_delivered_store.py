@@ -38,18 +38,18 @@ def test_export_delivered_report_excel(tmp_path: Path):
             "phone": "905301718596",
             "personel_adi": "Seda",
             "notified_at": "27.06.2026 11:05:00",
-            "callback_status": "Aradı - 11:12:33",
+            "callback_status": "Aradı - 27.06.2026 11:12:33",
         }
     ]
     path = export_delivered_report_excel(rows, tmp_path / "rapor.xlsx")
     wb = load_workbook(path)
     ws = wb.active
-    assert ws.cell(1, 1).value == "Numara"
-    assert ws.cell(2, 1).value == "905301718596"
-    assert ws.cell(2, 2).value == "Seda"
+    assert ws.cell(1, 1).value == "Personel Adı"
+    assert ws.cell(2, 1).value == "Seda"
+    assert ws.cell(2, 2).value == "905301718596"
     assert ws.cell(2, 3).value == "27.06.2026 11:05:00"
     assert ws.cell(1, 4).value == "Geri Arama Durumu"
-    assert ws.cell(2, 4).value == "Aradı - 11:12:33"
+    assert ws.cell(2, 4).value == "Aradı - 27.06.2026 11:12:33"
 
 
 def test_purge_call_date(tmp_path: Path):

@@ -564,10 +564,10 @@ def enrich_delivered_rows_with_callback_status(
     """İletilen çağrı satırlarına geri arama durumunu ekler.
 
     Kurallar:
-    - Aynı gün, aynı telefon
-    - Sadece EventType=1 (dış arama)
-    - İletilen saatten SONRA yapılan aramalar
-    - Eşleşme önceliği: dahili (varsa) > isim eşleşmesi
+    - Conversation'lar iletilen gün + ertesi gün aralığından gelir (geceyarısı / sabah callback'leri için).
+    - EventType=1 veya boş (dış/çıkış araması).
+    - İletilen (notified_at) zamanından sonra veya yaklaşık aynı zamanda yapılan aramalar.
+    - Eşleşme: aynı telefon (normalize) VE (dahili eşleşmesi veya ExtensionName ile personel adı fuzzy eşleşmesi).
     """
     personnel_rows = personnel_rows or []
 
@@ -627,8 +627,11 @@ def enrich_delivered_rows_with_callback_status(
                 continue
 
             when = rec["when"]
-            if notified_at and when < notified_at:
-                continue
+            if notified_at:
+                # Küçük saat farkı / skew toleransı (API ve local saat arasında)
+                skew = timedelta(minutes=5)
+                if when < (notified_at - skew):
+                    continue
 
             ext = str(rec["extension"] or "").strip()
             ext_name = str(rec["extension_name"] or "").strip()
@@ -641,7 +644,8 @@ def enrich_delivered_rows_with_callback_status(
                 break
 
         if first_match:
-            row_copy["callback_status"] = f"Aradı - {first_match.strftime('%H:%M:%S')}"
+            # Tam tarih + saat göster (farklı güne taşan callback'ler için de net olsun)
+            row_copy["callback_status"] = f"Aradı - {first_match.strftime('%d.%m.%Y %H:%M:%S')}"
         else:
             row_copy["callback_status"] = "Aramadı"
 

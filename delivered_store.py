@@ -7,7 +7,9 @@ from typing import Any
 
 
 class DeliveredStore:
-    """Başarıyla personele iletilen kaçan çağrı kayıtları (günlük rapor için)."""
+    """Başarıyla personele (gerçek personel eşleşmesi olan) iletilen kaçan çağrı kayıtları.
+    Sadece NotifyKind.PERSONNEL olan iletimler buraya kaydedilir.
+    """
 
     def __init__(self, path: Path, *, retention_hours: int = 24) -> None:
         self.path = path

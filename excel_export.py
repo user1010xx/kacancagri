@@ -128,7 +128,7 @@ def export_delivered_report_excel(
     )
     center_align = Alignment(horizontal="center", vertical="center")
 
-    headers = ["Numara", "Personel Adı", "İletilen Saat", "Geri Arama Durumu"]
+    headers = ["Personel Adı", "Numara", "İletilen Saat", "Geri Arama Durumu"]
     for col, header in enumerate(headers, start=1):
         cell = sheet.cell(row=1, column=col, value=header)
         cell.font = header_font_white
@@ -138,8 +138,8 @@ def export_delivered_report_excel(
 
     for row_idx, row in enumerate(rows, start=2):
         values = [
-            row.get("phone", ""),
             row.get("personel_adi", ""),
+            row.get("phone", ""),
             row.get("notified_at", ""),
             row.get("callback_status", ""),
         ]
@@ -149,7 +149,7 @@ def export_delivered_report_excel(
             if col == 3:
                 cell.alignment = center_align
 
-    widths = [18, 24, 22, 26]
+    widths = [24, 18, 22, 26]
     for i, w in enumerate(widths, start=1):
         sheet.column_dimensions[get_column_letter(i)].width = w
 
