@@ -563,11 +563,14 @@ def enrich_delivered_rows_with_callback_status(
 ) -> list[dict[str, Any]]:
     """İletilen çağrı satırlarına geri arama durumunu ekler.
 
-    Kurallar:
-    - Conversation'lar iletilen gün + ertesi gün aralığından gelir (geceyarısı / sabah callback'leri için).
-    - EventType=1 veya boş (dış/çıkış araması).
-    - İletilen (notified_at) zamanından sonra veya yaklaşık aynı zamanda yapılan aramalar.
-    - Eşleşme: aynı telefon (normalize) VE (dahili eşleşmesi veya ExtensionName ile personel adı fuzzy eşleşmesi).
+    Kurallar (kullanıcının istediği davranış):
+    - Conversation'lar iletilen tarihten raporun çekildiği ana kadar (bugün+1) aranır.
+    - **Sadece iletilen notified_at zamanından sonraki** aramalar dikkate alınır.
+      iletilen saati öncesi (hatta tam aynı saniye) olanlar yok sayılır.
+    - Küçük sistem saat farkı için max 60 saniye tolerans.
+    - Eşleşme: telefon + personel (dahili veya ExtensionName fuzzy).
+    - Bulunan ilk (en erken) geri arama "Aradı - dd.mm.yyyy HH:MM:SS" olarak gösterilir.
+    - Rapor çekildiği ana kadar herhangi bir zamanda arama yapılmışsa "Aradı" yazar.
     """
     personnel_rows = personnel_rows or []
 
@@ -581,15 +584,38 @@ def enrich_delivered_rows_with_callback_status(
             continue
 
         event_type = str(rec.get("EventType") or "").strip()
-        if event_type and event_type != "1":
+        direction = str(rec.get("Direction") or "").upper().strip()
+
+        # Daha esnek filtre: EventType=1 veya boş, ya da Direction OUT ise dahil et
+        is_potential_outgoing = (
+            (not event_type or event_type == "1")
+            or direction in {"OUT", "OUTGOING", "DIAL"}
+        )
+        if not is_potential_outgoing:
             continue
+
+        # Daha fazla alan dene (bazı kayıtlarda farklı field'lar dolu olabilir)
+        phone_val = rec.get("Phone") or rec.get("phone") or rec.get("CalledNumber") or ""
+        ext_val = (
+            rec.get("Extension")
+            or rec.get("CompletedExtension")
+            or rec.get("extension")
+            or rec.get("ExtensionName")  # bazen buraya yazılıyor
+            or ""
+        )
+        ext_name_val = (
+            rec.get("ExtensionName")
+            or rec.get("CompletedExtensionName")
+            or rec.get("extensionName")
+            or ""
+        )
 
         prepared.append(
             {
-                "phone": _normalize_phone(rec.get("Phone") or rec.get("phone") or ""),
+                "phone": _normalize_phone(phone_val),
                 "when": when,
-                "extension": str(rec.get("Extension") or "").strip(),
-                "extension_name": str(rec.get("ExtensionName") or "").strip(),
+                "extension": str(ext_val).strip(),
+                "extension_name": str(ext_name_val).strip(),
             }
         )
 
@@ -623,14 +649,13 @@ def enrich_delivered_rows_with_callback_status(
         first_match: datetime | None = None
 
         for rec in prepared:
-            if target_phone and rec["phone"] and rec["phone"] != target_phone:
-                continue
-
             when = rec["when"]
             if notified_at:
-                # Küçük saat farkı / skew toleransı (API ve local saat arasında)
-                skew = timedelta(minutes=5)
-                if when < (notified_at - skew):
+                # Sadece iletilen saatten (dakika:saniye dahil) SONRA yapılan aramalar önemli.
+                # iletilen öncesi aramalar tamamen yok sayılır.
+                # Küçük clock skew için maks 90 saniye tolerans (Telegram ve sistem zamanı farkı için).
+                skew = timedelta(seconds=90)
+                if when <= (notified_at - skew):
                     continue
 
             ext = str(rec["extension"] or "").strip()
@@ -638,8 +663,13 @@ def enrich_delivered_rows_with_callback_status(
 
             by_extension = bool(ext and extensions and ext in extensions)
             by_name = _person_name_matches(ext_name, target_person)
+            personnel_match = by_extension or by_name
 
-            if by_extension or by_name:
+            # Telefon kontrolü: ya tam eşleşme ya da conv kaydında phone yoksa
+            rec_phone = rec.get("phone") or ""
+            phone_match = (not target_phone) or (not rec_phone) or (rec_phone == target_phone)
+
+            if personnel_match and phone_match:
                 first_match = when
                 break
 

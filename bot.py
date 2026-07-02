@@ -129,12 +129,14 @@ def _require_company_code() -> str | None:
     return config.company_code or None
 
 
-def _record_delivered_notification(notify_ctx) -> None:
+def _record_delivered_notification(notify_ctx, group_sent_at: "dtm | None" = None) -> None:
     personnel = notify_ctx.personnel or {}
     personel_adi = personnel.get("personel_adi", notify_ctx.dahili or "")
     # "İletilen çağrı" raporu, çağrının tarihi değil iletim zamanına göre gruplanır.
     call_date = _report_today()
-    notified_at_local = dtm.now(REPORT_TZ).replace(tzinfo=None)
+    # En doğru iletilen zaman: mesajın gerçekten Telegram'a gönderildiği an
+    # (deliver fonksiyonundan gelen group_sent_at). Bu, Telegram görünümü ile Excel'i birebir aynı yapar.
+    notified_at_local = group_sent_at or dtm.now(REPORT_TZ).replace(tzinfo=None)
     delivered_store.add(
         call_key=notify_ctx.key,
         phone=notify_ctx.phone,
@@ -178,10 +180,12 @@ async def _build_delivered_report_rows(target_date: date, rows: list[dict]) -> l
             for r in rows
         ]
 
-    # Callback'ler (personelin araması) iletilen gün + ertesi gün yapılabilir.
-    # Missed call gecikmeleri de hesaba katılarak target-1 .. target+1 aralığı çekiyoruz.
+    # Personele iletilen saatten (dakika:saniye dahil) sonraki aramaları 
+    # rapor çekildiği ana kadar kontrol ediyoruz.
+    # iletilen tarihin 1 gün öncesinden bugüne (+1) kadar conversation çekiyoruz.
+    # Zenginleştirme içindeki zaman filtresi sadece iletilen sonrası olanları alır.
     conv_start = target_date - timedelta(days=1)
-    conv_end = target_date + timedelta(days=1)
+    conv_end = _report_today() + timedelta(days=1)
     conversations = await asyncio.to_thread(
         fetch_conversations,
         company_code,
@@ -731,7 +735,7 @@ async def _process_missed_calls_for_date(
 
             key_variants = call_key_variants(call)
 
-            private_ok, group_ok = await deliver_missed_call_notification(
+            private_ok, group_ok, group_sent_at = await deliver_missed_call_notification(
                 notify_ctx,
                 bot=bot,
                 target_chat_id=config.target_chat_id,
@@ -745,7 +749,7 @@ async def _process_missed_calls_for_date(
                 # Sadece gerçek personel eşleşmesi olan iletimleri "personele iletilen" kaydına al.
                 # Böylece Excel raporunda personel adı boş veya "bilinmiyor" satırlar olmaz.
                 if notify_ctx.kind == NotifyKind.PERSONNEL:
-                    _record_delivered_notification(notify_ctx)
+                    _record_delivered_notification(notify_ctx, group_sent_at=group_sent_at)
 
             if should_mark_complete(notify_ctx, private_ok=private_ok, group_ok=group_ok):
                 sent_store.mark_complete_keys(key_variants, save=True)

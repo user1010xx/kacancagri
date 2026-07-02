@@ -171,9 +171,20 @@ async def deliver_missed_call_notification(
     *,
     bot,
     target_chat_id: int,
-) -> tuple[bool, bool]:
-    """Özel ve grup bildirimini gönderir. (private_ok, group_ok) döner."""
+) -> tuple[bool, bool, "dtm | None"]:
+    """Özel ve grup bildirimini gönderir.
+
+    Dönüş: (private_ok, group_ok, group_sent_at)
+    - group_sent_at: Tam olarak grub a mesajın başarıyla gönderildiği an.
+      Bu zaman hem Excel "İletilen Saat" hem de geri arama tespiti için kullanılır.
+      Böylece Telegram'daki görünen iletilen zaman ile Excel birebir uyumlu olur.
+    """
+    from datetime import datetime as dtm
+    from zoneinfo import ZoneInfo
+
+    REPORT_TZ = ZoneInfo("Europe/Istanbul")
     private_ok = False
+    group_sent_at: dtm | None = None
 
     if ctx.kind == NotifyKind.PERSONNEL:
         personnel = ctx.personnel or {}
@@ -194,15 +205,18 @@ async def deliver_missed_call_notification(
             try:
                 await bot.send_message(chat_id=target_chat_id, text=group_text)
                 group_ok = True
+                group_sent_at = dtm.now(REPORT_TZ).replace(tzinfo=None)
             except Exception:
                 group_ok = False
         else:
             group_ok = True
+            group_sent_at = dtm.now(REPORT_TZ).replace(tzinfo=None)
     else:
         group_text = build_group_text(ctx, private_ok=private_ok)
         try:
             await bot.send_message(chat_id=target_chat_id, text=group_text)
             group_ok = True
+            group_sent_at = dtm.now(REPORT_TZ).replace(tzinfo=None)
         except Exception:
             group_ok = False
 
